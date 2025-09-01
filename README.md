@@ -55,6 +55,16 @@ python record_replay.py --exptid=test --save
 python save_jit.py --exptid=test
 ```
 
+(for competition,can not be directly used)
+```
+python save_jit_175.py --exptid=test
+```
+
+6. Evaluate your policy (for competition,can not be directly used)
+```
+python evaluate.py --exptid=test
+```
+
 ### Arguments ###
 - --exptid: string,  to describe the run. 
 - --device: can be `cuda:0`, `cpu`, etc.
