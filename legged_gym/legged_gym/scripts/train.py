@@ -39,6 +39,7 @@ import wandb
 def train(args):
     args.headless = True
     log_pth = LEGGED_GYM_ROOT_DIR + "/logs/{}/".format(args.proj_name) + datetime.now().strftime('%b%d_%H-%M-%S--') + args.exptid
+    os.environ["WANDB_API_KEY"]='d18742a0e125a18ff2990ecbf3542d8270830341'
     os.environ["WANDB_BASE_URL"]='https://api.bandw.top'
     try:
         os.makedirs(log_pth)

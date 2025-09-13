@@ -585,6 +585,36 @@ class HumanoidRobot(BaseTask):
         cam_target = gymapi.Vec3(lookat[0], lookat[1], lookat[2])
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
+    def _analyze_terrain_complexity(self):
+        # 计算前方点在measured_heights张量中的索引
+        # measured_points_x = [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.05, 1.2] (12个点)
+        # measured_points_y = [-0.75, -0.6, -0.45, -0.3, -0.15, 0., 0.15, 0.3, 0.45, 0.6, 0.75] (11个点)
+        # meshgrid后flatten的顺序：按 x 分组，每个 x 下遍历所有 y
+        # 前方点定义为 x > 0 的点，即索引为 x=[0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.05, 1.2] (8个x值)
+        # 对于每个y值，前方x点的起始索引为3（对应x=0之后的第一个点x=0.15）
+        # 每行（y值）有12个x点，前方点为索引3-11（共8个点）
+        num_x_points = len(self.cfg.terrain.measured_points_x)  # 12
+        num_y_points = len(self.cfg.terrain.measured_points_y)  # 11
+        forward_x_start_idx = 3  # 对应x=0.15的索引位置（x=0是索引3，x=0.15是索引4）
+        
+        # 创建前方点的索引：
+        front_indices = torch.arange(forward_x_start_idx * num_y_points, num_x_points*num_y_points)
+
+        # 提取前方高度采样点（机器人前方区域）
+        forward_heights = self.measured_heights[:, front_indices]  # 前方采样点
+        
+        # 计算地形复杂度指标
+        height_variance = torch.var(forward_heights, dim=1)      # 高度方差（起伏程度）
+        height_gradient = torch.max(forward_heights, dim=1)[0] - torch.min(forward_heights, dim=1)[0]  # 高度差
+        height_roughness = torch.mean(torch.abs(torch.diff(forward_heights, dim=1)), dim=1)  # 粗糙度
+        
+        # 综合复杂度评分 [0, 1]
+        complexity = torch.clamp(
+            0.4 * height_variance + 0.4 * height_gradient + 0.2 * height_roughness,
+            0.0, 1.0
+        )
+        return complexity
+
     #------------- Callbacks --------------
     def _process_rigid_shape_props(self, props, env_id):
         """ Callback allowing to store/change/randomize the rigid shape properties of each environment.

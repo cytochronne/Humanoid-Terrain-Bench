@@ -114,7 +114,7 @@ class Terrain:
         
         selected_pair = random.choices(pairs, weights=normalized_weights, k=1)[0]
         terrain_type, index = selected_pair  
-        difficulty = np.random.uniform(0.7, 1)
+        #difficulty = np.random.uniform(0.7, 1)
         if terrain_type == "single":
             terrain = generator.single_create(terrain,index,difficulty)
         elif terrain_type == "multiplication":
