@@ -1,0 +1,76 @@
+Humanoid_robot:
+  create_sim():
+    - if terrain_config.mesh_type != none
+    - terrain = Terrain(cfg=self.cfg.terrain)
+    - _create_trimesh()
+Terrain:
+    - get cfg: = terrain_config from terrain_config/config.py
+    - difficulty:
+      - init(): 
+      #对于仿真环境中一共nums*cols个格子(这是大地图)，根据列数计算难度并每格
+      #调用make_terrain()创建一个地形，大地图被拼成一个按行=难度(difficulty)、列=地形类型组织的网格
+          difficulty = i / (self.cfg.num_rows)
+          terrain = make_terrain(difficulty)
+          add_terrain_to_map(terrain, i, j)
+      
+      - make_terrain():
+      #初始化一个地形subterrain，读取地形配置比例参数并填充subterrain
+      #difficulty被重置为随机难度，terrain_type在config中写死为single，仅使
+      #用台阶
+          difficulty = np.random.uniform(0.7, 1)、
+
+      - single_create(terrain,index,difficulty):
+       - terrain.idx = id #id为地形类型编号
+      #根据传入的id选择对应地形并调用相应的地形生成函数，修改地形高度图，生成
+      #目标点和返回终点位置；
+      #此处调用combine_config中的single_create(terrain,index,difficulty)，
+      #进而调用了single_terrain.py中的stair()，其中会根据difficulty调整台阶
+      #细微地形(台阶高度，宽度),id统一被设为楼梯（5）
+
+    - add_terrain_to_map(self, terrain, row, col):
+      - self.terrain_type[i, j] = terrain.idx
+      #将创建好的subterrain加到map上
+      #填充terrain_type为每一个地形的序号,为后续课程学习准备
+
+    - _create_trimesh():
+    
+
+terrain_level:
+  OnpolicyRunner.log:
+    #terrain_level作为episode信息的一部分被记录注册到log中,环境在episode结束时
+    #将terrain_level添加到 infos['episode'] 中
+    - for key in locs['ep_infos'][0]
+    -     wandb_dict['Episode_rew/' + key] = value
+    - if 'episode' in infos
+    -   ep_infos.append(infos['episode'])
+    #info来自于step()
+
+  Humanoid_robot:
+    step():
+    #返回的extras就是infos
+      -  return self.extras
+
+    reset_idx():
+    #填充了terrain_level
+    - self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
+
+    _get_env_origins(self):
+    #max_init_level在terrain_base的config中写死为1
+    #terrain_types:给每个环境分配地形类型索引,rows*cols个各自(大地图)中每一列表示一种地形种类，这里每一列分配一个地形索引；terrain例(0,0,0,0,1,1,1,1......)
+    - self.terrain_levels = torch.randint(0, max_init_level+1, (self.num_envs,), device=self.device)
+    - self.terrain_types = torch.div(torch.arange(self.num_envs, device=self.device), (self.num_envs/self.cfg.terrain.num_cols), rounding_mode='floor').to(torch.long)
+    - terrain_class = torch.from_numpy(self.terrain.terrain_type).to(self.device).to(torch.float) #
+    #max_init_level在terrain_base的config中写死为1
+
+    _update_terrain_curriculum(self, env_ids):
+    #根据当前智能体的表现更新地形等级terrain_levels，更新环境类比和目标点
+    - self.env_class[env_ids] = self.terrain_class[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
+
+
+#一旦难度改变，课程系统与机器人各发生了什么？
+#环境侧（地形课程数据）会被“重映射”，相同的环境索引在“升级/降级”后，会指向不同的（行）地形块，从而“地形类别”和“目标点路径”都随之变化。
+
+
+
+
+      
