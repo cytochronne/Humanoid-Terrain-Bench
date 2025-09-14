@@ -205,8 +205,8 @@ class HumanoidRobot(BaseTask):
             if(self.total_times > 0):
                 if(self.total_times > self.last_times):
                     # print("total_times=",self.total_times)
-                    # print("success_rate=",self.success_times / self.total_times)
-                    # print("complete_rate=",(self.complete_times / self.total_times).cpu().numpy().copy())
+                    print("success_rate=",self.success_times / self.total_times)
+                    print("complete_rate=",(self.complete_times / self.total_times).cpu().numpy().copy())
                     self.last_times = self.total_times
 
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
@@ -353,10 +353,10 @@ class HumanoidRobot(BaseTask):
         """ Check if environments need to be reset
         """
         self.reset_buf = torch.zeros((self.num_envs, ), dtype=torch.bool, device=self.device)
-        roll_cutoff = torch.abs(self.roll) > 1.5
-        pitch_cutoff = torch.abs(self.pitch) > 1.5
+        roll_cutoff = torch.abs(self.roll) > 2.0
+        pitch_cutoff = torch.abs(self.pitch) > 2.0
         reach_goal_cutoff = self.cur_goal_idx >= self.cfg.terrain.num_goals
-        height_cutoff = self.root_states[:, 2] < 0.5
+        height_cutoff = self.root_states[:, 2] < 0.3
 
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         self.time_out_buf |= reach_goal_cutoff
@@ -616,6 +616,31 @@ class HumanoidRobot(BaseTask):
         return complexity
 
     #------------- Callbacks --------------
+    def _generate_adaptive_speed(self, env_ids):
+        """基于地形复杂度生成自适应速度"""
+        complexity = self._analyze_terrain_complexity()[env_ids]
+        
+        # 速度策略：
+        # - 简单地形（complexity < 0.3）：高速前进 [1.0, 1.5] m/s
+        # - 中等地形（0.3 ≤ complexity < 0.7）：中速前进 [0.5, 1.0] m/s  
+        # - 困难地形（complexity ≥ 0.7）：低速前进 [0.2, 0.5] m/s
+        
+        base_speed = 1.5 - complexity  # 基础速度：1.5 → 0.5
+        speed_range = 0.3 * (1 - complexity)  # 速度范围：简单地形变化大，困难地形变化小
+        
+        # 在基础速度±范围内随机采样
+        min_speed = torch.clamp(base_speed - speed_range, 0.1, 1.4)
+        max_speed = torch.clamp(base_speed + speed_range, 0.2, 1.5)
+        
+        adaptive_speeds = torch_rand_float(
+            min_speed.unsqueeze(1), 
+            max_speed.unsqueeze(1), 
+            (len(env_ids), 1), 
+            device=self.device
+        ).squeeze(1)
+        
+        return adaptive_speeds
+
     def _process_rigid_shape_props(self, props, env_id):
         """ Callback allowing to store/change/randomize the rigid shape properties of each environment.
             Called During environment creation.
@@ -714,7 +739,7 @@ class HumanoidRobot(BaseTask):
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
-        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 0] = self._generate_adaptive_speed(env_ids)
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         else:
