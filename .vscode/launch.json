@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Train Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/rashare/yanzhexie/Humanoid-Terrain-Bench/legged_gym/legged_gym/scripts/train.py",   // 指定要运行的文件
+            "console": "integratedTerminal",            // 在 VS Code 内置终端运行
+            "args": [
+                "--exptid=debug",
+                "--device=cuda:0"
+            ],
+            "cwd": "${workspaceFolder}/legged_gym/legged_gym/scripts"                 // 工作目录（通常就是项目根目录）
+        }
+
+
+    ]
+}
