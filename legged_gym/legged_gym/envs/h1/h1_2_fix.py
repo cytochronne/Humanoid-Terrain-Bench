@@ -159,7 +159,7 @@ class H1_2FixCfg( LeggedRobotCfg ):
         soft_torque_limit = 1.
         base_height_target = 1.
         max_contact_force = 100. # forces above this value are penalized
-        is_play = False
+        is_play = True
     
 
 

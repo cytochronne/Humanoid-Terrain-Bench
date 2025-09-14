@@ -205,8 +205,8 @@ class HumanoidRobot(BaseTask):
             if(self.total_times > 0):
                 if(self.total_times > self.last_times):
                     # print("total_times=",self.total_times)
-                    print("success_rate=",self.success_times / self.total_times)
-                    print("complete_rate=",(self.complete_times / self.total_times).cpu().numpy().copy())
+                    # print("success_rate=",self.success_times / self.total_times)
+                    # print("complete_rate=",(self.complete_times / self.total_times).cpu().numpy().copy())
                     self.last_times = self.total_times
 
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
@@ -458,6 +458,13 @@ class HumanoidRobot(BaseTask):
             self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids]) / self.max_episode_length_s
             self.episode_sums[key][env_ids] = 0.
         self.episode_length_buf[env_ids] = 0
+
+        # calculate completion rate and success rate
+        if self.total_times > 0:
+            completion_rate = self.complete_times / self.total_times
+            success_rate = self.success_times / self.total_times
+            self.extras["episode"]["completion_rate"] = completion_rate
+            self.extras["episode"]["success_rate"] = success_rate
 
         # log additional curriculum info
         if self.cfg.terrain.curriculum:
