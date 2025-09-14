@@ -87,7 +87,7 @@ class HumanoidRobot(BaseTask):
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
         self._init_buffers()
         self._prepare_reward_function()
-    
+        
         if self.save:
             self.episode_data = {
                 'observations': [[] for _ in range(self.num_envs)],
@@ -605,10 +605,10 @@ class HumanoidRobot(BaseTask):
         forward_x_start_idx = 3  # 对应x=0.15的索引位置（x=0是索引3，x=0.15是索引4）
         
         # 创建前方点的索引：
-        front_indices = torch.arange(forward_x_start_idx * num_y_points, num_x_points*num_y_points)
-
+        front_indices = torch.arange((forward_x_start_idx * num_y_points - 1), num_x_points*num_y_points)
+        front_indices = forward_x_start_idx * num_y_points - 1
         # 提取前方高度采样点（机器人前方区域）
-        forward_heights = self.measured_heights[:, front_indices]  # 前方采样点
+        forward_heights = self.measured_heights[:, front_indices:]  # 前方采样点
         
         # 计算地形复杂度指标
         height_variance = torch.var(forward_heights, dim=1)      # 高度方差（起伏程度）
@@ -625,6 +625,7 @@ class HumanoidRobot(BaseTask):
     #------------- Callbacks --------------
     def _generate_adaptive_speed(self, env_ids):
         """基于地形复杂度生成自适应速度"""
+        
         complexity = self._analyze_terrain_complexity()[env_ids]
         
         # 速度策略：
@@ -639,12 +640,8 @@ class HumanoidRobot(BaseTask):
         min_speed = torch.clamp(base_speed - speed_range, 0.1, 1.4)
         max_speed = torch.clamp(base_speed + speed_range, 0.2, 1.5)
         
-        adaptive_speeds = torch_rand_float(
-            min_speed.unsqueeze(1), 
-            max_speed.unsqueeze(1), 
-            (len(env_ids), 1), 
-            device=self.device
-        ).squeeze(1)
+        rand = torch.rand(len(env_ids), device=self.device)  # shape: (N,)
+        adaptive_speeds = min_speed + rand * (max_speed - min_speed)
         
         return adaptive_speeds
 
@@ -746,7 +743,13 @@ class HumanoidRobot(BaseTask):
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
-        self.commands[env_ids, 0] = self._generate_adaptive_speed(env_ids)
+        #若启用高度测量，则使用自适应速度
+        if not self.cfg.terrain.measure_heights:
+            self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        else:
+            adaptive_speeds = self._generate_adaptive_speed(env_ids)
+            self.commands[env_ids, 0] = adaptive_speeds
+        
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         else:
@@ -923,6 +926,11 @@ class HumanoidRobot(BaseTask):
         # self.contact_buf = torch.zeros(self.num_envs, self.cfg.env.contact_buf_len, 4, device=self.device, dtype=torch.float)
         self.contact_buf = torch.zeros(self.num_envs, self.cfg.env.contact_buf_len, 2, device=self.device, dtype=torch.float)
 
+        if self.cfg.terrain.measure_heights:
+            self.height_points, self.height_points_data = self._init_height_points()
+            self.measured_heights = torch.zeros(self.num_envs, self.num_height_points, dtype=torch.float, device=self.device, requires_grad=False)
+            self.measured_heights_data = torch.zeros(self.num_envs, self.num_height_points_data, dtype=torch.float, device=self.device, requires_grad=False)
+        
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
         self._resample_commands(torch.arange(self.num_envs, device=self.device, requires_grad=False))
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
@@ -931,10 +939,8 @@ class HumanoidRobot(BaseTask):
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-        if self.cfg.terrain.measure_heights:
-            self.height_points, self.height_points_data = self._init_height_points()
-        self.measured_heights = 0
-        self.measured_heights = 0
+        
+        
 
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
