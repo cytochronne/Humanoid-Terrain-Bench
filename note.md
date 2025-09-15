@@ -48,10 +48,37 @@ def compute_observations(self):
 # 高度信息整理
 ```python
 def _init_height_points(self): return points/height_points
+    y = torch.tensor(self.cfg.terrain.measured_points_y, device=self.device, requires_grad=False)
+    x = torch.tensor(self.cfg.terrain.measured_points_x, device=self.device, requires_grad=False)
+    grid_x, grid_y = torch.meshgrid(x, y)
+    points[i, :, 0] = grid_x.flatten() + xy_noise[:, 0]
+    points[i, :, 1] = grid_y.flatten() + xy_noise[:, 1]
     points.shape() = [num_envs, num_height_points, 3]
+
+measured_points_x = [0.0, 0.5, 1.0]
+measured_points_y = [-0.2, 0.0, 0.3, 0.6]
+
+points[0] = tensor([[ 0.0, -0.2, 0.0],
+                    [ 0.0,  0.0, 0.0],
+                    [ 0.0,  0.3, 0.0],
+                    [ 0.0,  0.6, 0.0],
+                    [ 0.5, -0.2, 0.0],
+                    [ 0.5,  0.0, 0.0],
+                    [ 0.5,  0.3, 0.0],
+                    [ 0.5,  0.6, 0.0],
+                    [ 1.0, -0.2, 0.0],
+                    [ 1.0,  0.0, 0.0],
+                    [ 1.0,  0.3, 0.0],
+                    [ 1.0,  0.6, 0.0]])
 
 # num_height_points = 132
 self.measured_heights, self.measured_heights_data = self._get_heights()
     measured_heights.shape() = [num_envs, num_height_points]
+
+# 提取前方高度采样点（机器人前方区域）
+def _analyze_terrain_complexity(self):
+        forward_heights = self.measured_heights[:, :self.cfg.terrain.front_points_num]  # 前方采样点
+        forward_heights.shape() = [num_envs, 8]
+
 
     
