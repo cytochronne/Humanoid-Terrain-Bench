@@ -83,6 +83,17 @@ class HumanoidRobot(BaseTask):
         self.resize_transform = torchvision.transforms.Resize((self.cfg.depth.resized[1], self.cfg.depth.resized[0]), 
                                                               interpolation=torchvision.transforms.InterpolationMode.BICUBIC)
         
+        # init data save buffer
+        self.init_done = True
+        self.global_counter = 0
+        self.total_env_steps_counter = 0
+        self.time_stamp = 0
+
+        self.total_times = 0
+        self.last_times = -1
+        self.success_times = 0
+        self.complete_times = 0.
+
         if not self.headless:
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
         self._init_buffers()
@@ -107,16 +118,7 @@ class HumanoidRobot(BaseTask):
                 'rigid_body_state': [[] for _ in range(self.num_envs)],
                 'dof_state': [[] for _ in range(self.num_envs)]
             }
-        # init data save buffer
-        self.init_done = True
-        self.global_counter = 0
-        self.total_env_steps_counter = 0
-        self.time_stamp = 0
-
-        self.total_times = 0
-        self.last_times = -1
-        self.success_times = 0
-        self.complete_times = 0.
+        
 
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
         self.post_physics_step()
@@ -353,10 +355,10 @@ class HumanoidRobot(BaseTask):
         """ Check if environments need to be reset
         """
         self.reset_buf = torch.zeros((self.num_envs, ), dtype=torch.bool, device=self.device)
-        roll_cutoff = torch.abs(self.roll) > 2.0
-        pitch_cutoff = torch.abs(self.pitch) > 2.0
+        roll_cutoff = torch.abs(self.roll) > 1.5
+        pitch_cutoff = torch.abs(self.pitch) > 1.5
         reach_goal_cutoff = self.cur_goal_idx >= self.cfg.terrain.num_goals
-        height_cutoff = self.root_states[:, 2] < 0.3
+        height_cutoff = self.root_states[:, 2] < 0.5
 
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         self.time_out_buf |= reach_goal_cutoff
@@ -600,15 +602,15 @@ class HumanoidRobot(BaseTask):
         # 前方点定义为 x > 0 的点，即索引为 x=[0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.05, 1.2] (8个x值)
         # 对于每个y值，前方x点的起始索引为3（对应x=0之后的第一个点x=0.15）
         # 每行（y值）有12个x点，前方点为索引3-11（共8个点）
-        num_x_points = len(self.cfg.terrain.measured_points_x)  # 12
-        num_y_points = len(self.cfg.terrain.measured_points_y)  # 11
-        forward_x_start_idx = 3  # 对应x=0.15的索引位置（x=0是索引3，x=0.15是索引4）
+        # num_x_points = len(self.cfg.terrain.measured_points_x)  # 12
+        # num_y_points = len(self.cfg.terrain.measured_points_y)  # 11
+        # forward_x_start_idx = 3  # 对应x=0.15的索引位置（x=0是索引3，x=0.15是索引4）
         
-        # 创建前方点的索引：
-        front_indices = torch.arange((forward_x_start_idx * num_y_points - 1), num_x_points*num_y_points)
-        front_indices = forward_x_start_idx * num_y_points - 1
+        # # 创建前方点的索引：
+        # front_indices = torch.arange((forward_x_start_idx * num_y_points - 1), num_x_points*num_y_points)
+        # front_indices = forward_x_start_idx * num_y_points - 1
         # 提取前方高度采样点（机器人前方区域）
-        forward_heights = self.measured_heights[:, front_indices:]  # 前方采样点
+        forward_heights = self.measured_heights[:, :self.cfg.terrain.front_points_num]  # 前方采样点
         
         # 计算地形复杂度指标
         height_variance = torch.var(forward_heights, dim=1)      # 高度方差（起伏程度）
@@ -743,6 +745,8 @@ class HumanoidRobot(BaseTask):
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
+        if len(env_ids) == 0:
+            return
         #若启用高度测量，则使用自适应速度
         if not self.cfg.terrain.measure_heights:
             self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
@@ -928,8 +932,9 @@ class HumanoidRobot(BaseTask):
 
         if self.cfg.terrain.measure_heights:
             self.height_points, self.height_points_data = self._init_height_points()
-            self.measured_heights = torch.zeros(self.num_envs, self.num_height_points, dtype=torch.float, device=self.device, requires_grad=False)
-            self.measured_heights_data = torch.zeros(self.num_envs, self.num_height_points_data, dtype=torch.float, device=self.device, requires_grad=False)
+            if self.global_counter % self.cfg.depth.update_interval == 0:
+                self.measured_heights, self.measured_heights_data  = self._get_heights()
+            
         
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
         self._resample_commands(torch.arange(self.num_envs, device=self.device, requires_grad=False))
