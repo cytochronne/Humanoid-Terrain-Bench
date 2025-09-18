@@ -594,6 +594,65 @@ class HumanoidRobot(BaseTask):
         cam_target = gymapi.Vec3(lookat[0], lookat[1], lookat[2])
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
+    def _get_forward_height_gradient(self):
+        if not hasattr(self, 'measured_heights') or isinstance(self.measured_heights, int):
+            # 如果还没有初始化，返回默认复杂度
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        front_x_indices = [3, 4, 5, 6]  # x = 0, 0.15, 0.3, 0.45 的索引
+        front_point_indices = []
+        for x_idx in front_x_indices:
+            for y_idx in range(11):  # 所有y方向
+                front_point_indices.append(x_idx * 11 + y_idx)
+        
+        # forward_heights shape: [num_envs, 4*11]
+        forward_heights = self.measured_heights[:, front_point_indices]
+        # 重塑为 [num_envs, 4 (x轴采样行), 11 (y轴列)]
+        forward_heights = forward_heights.view(self.num_envs, len(front_x_indices), 11)
+
+        # 沿前进方向(x)计算相邻行的高度差来估计梯度 (有限差分)
+        # dx: 相邻采样行之间的x间距 (根据索引含义推断为0.15m)
+        dx = 0.15
+        # diffs shape: [num_envs, 3, 11]
+        diffs = (forward_heights[:, 1:, :] - forward_heights[:, :-1, :]) / dx
+
+        # 计算平均梯度（对所有y列及所有相邻x区间取平均）
+        mean_grad = diffs.mean(dim=(1, 2))  # [num_envs]
+
+        # 也可计算最大绝对梯度用于诊断（如有需要可以返回或存储）
+        # max_abs_grad = diffs.abs().amax(dim=(1,2))
+
+        return mean_grad
+
+    def _estimate_current_stride_length(self):
+        """估计当前步长 (stride length)
+
+        使用当前足端在世界系的位置，计算它们相对基座位置在机体前向方向上的投影范围：
+            stride = max(proj) - min(proj)
+        若足端少于2个返回0。
+
+        Returns:
+            torch.Tensor: [num_envs] 当前估计步长
+        """
+        if not hasattr(self, 'feet_indices') or self.feet_indices.numel() < 2:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        # 脚部位置 (N, F, 13) 取前3为xyz
+        feet_pos = self.rigid_body_states[:, self.feet_indices, :3]  # (N, F, 3)
+        base_pos = self.root_states[:, :3].unsqueeze(1)             # (N, 1, 3)
+        rel = feet_pos - base_pos                                   # (N, F, 3)
+
+        # 当前前向向量 (N,3)
+        forward_dir = quat_apply(self.base_quat, self.forward_vec)
+        forward_dir = forward_dir / (torch.norm(forward_dir, dim=1, keepdim=True) + 1e-6)
+
+        proj = (rel * forward_dir.unsqueeze(1)).sum(dim=-1)         # (N, F)
+        max_proj, _ = proj.max(dim=1)
+        min_proj, _ = proj.min(dim=1)
+        stride = torch.clamp(max_proj - min_proj, min=0.)
+        return stride
+
+
     def _analyze_terrain_complexity(self):
         # 提取前方高度采样点（机器人前方区域）
         # forward_heights = self.measured_heights[:, :self.cfg.terrain.front_points_num]  # 前方采样点
@@ -651,9 +710,9 @@ class HumanoidRobot(BaseTask):
         height_roughness /= 4
         
         complexity = torch.clamp(
-            self.cfg.commands.speed_complexity_weight * height_variance + 
-            self.cfg.commands.speed_gradient_weight * height_gradient + 
-            self.cfg.commands.speed_roughness_weight * height_roughness,
+            0.4 * height_variance + 
+            0.4* height_gradient + 
+            0.2 * height_roughness,
             0.0, 1.0
         )
         return complexity
@@ -1591,3 +1650,18 @@ class HumanoidRobot(BaseTask):
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
         return torch.sum((torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) -  self.cfg.rewards.max_contact_force).clip(min=0.), dim=1)
+    
+    def _reward_gradient_aware_stride(self):
+        """高度梯度感知的步长优化"""
+        forward_gradient = self._get_forward_height_gradient()
+        
+        # 根据坡度调整最优步长
+        # 平地：大步长，上坡：小步长，下坡：中等步长
+        target_stride_length = torch.clamp(0.6 - 0.3 * torch.abs(forward_gradient), 0.3, 0.8)
+        
+        # 计算当前步长（通过脚部位置估计）
+        current_stride = self._estimate_current_stride_length()
+        stride_error = torch.abs(current_stride - target_stride_length)
+        
+        # 指数型奖励：步长越接近目标越接近1
+        return torch.exp(-stride_error / 0.1)

@@ -234,6 +234,7 @@ class LeggedRobotCfg(BaseConfig):
             action_rate = -0.1
             delta_torques = -1.0e-7
             torques = -0.00001
+            gradient_aware_stride = 0.5  # 高度梯度感知的步长优化
             # hip_pos = -0.5
             dof_error = -0.04
             feet_stumble = -1
