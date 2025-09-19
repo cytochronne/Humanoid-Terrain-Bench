@@ -1653,6 +1653,7 @@ class HumanoidRobot(BaseTask):
     
     def _reward_gradient_aware_stride(self):
         """高度梯度感知的步长优化"""
+        
         forward_gradient = self._get_forward_height_gradient()
         
         # 根据坡度调整最优步长

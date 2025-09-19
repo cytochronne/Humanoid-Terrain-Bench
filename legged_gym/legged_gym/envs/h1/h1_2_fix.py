@@ -151,6 +151,8 @@ class H1_2FixCfg( LeggedRobotCfg ):
             feet_stumble = -0.0 
             action_rate = -0.01
             stand_still = -0.
+            gradient_aware_stride = 0.3  # 高度梯度感知的步长优化
+
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
