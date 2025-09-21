@@ -897,13 +897,11 @@ class HumanoidRobot(BaseTask):
             ).squeeze(1) 
         
         if self.cfg.commands.heading_command:
-            # 1. 随机采样朝向角度
-            self.commands[env_ids, 3] = torch_rand_float(
-                self.command_ranges["heading"][0], 
-                self.command_ranges["heading"][1], 
-                (len(env_ids), 1), 
-                device=self.device
-            ).squeeze(1)
+            if hasattr(self, 'target_yaw') and hasattr(self, 'yaw'):
+                self.commands[env_ids, 3] = self.target_yaw[env_ids]
+                print("using target_yaw as heading")
+            else:
+                self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
             
             # 2. 计算当前朝向角度
             forward = quat_apply(self.base_quat[env_ids], self.forward_vec[env_ids])
@@ -911,6 +909,7 @@ class HumanoidRobot(BaseTask):
 
             print("real_heading:", heading)
             print("target_heading:", self.commands[env_ids, 3])
+            
             # 3. 计算朝向误差和角速度命令
             heading_error = self.commands[env_ids, 3] - heading
             heading_error_wrapped = wrap_to_pi(heading_error)
@@ -1686,3 +1685,9 @@ class HumanoidRobot(BaseTask):
         
         # 指数型奖励：步长越接近目标越接近1
         return torch.exp(-stride_error / 0.1)
+
+    def _reward_reach_goal(self):
+        """到达目标奖励（指数衰减，与跟踪奖励一致）"""
+        distance_to_goal = torch.norm(self.root_states[:, :2] - self.cur_goals[:, :2], dim=1)
+        # 使用指数衰减，距离越近奖励越高
+        return torch.exp(-distance_to_goal / 0.2)  # 0.5是衰减参数
