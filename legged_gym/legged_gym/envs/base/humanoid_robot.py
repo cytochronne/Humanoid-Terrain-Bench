@@ -262,23 +262,41 @@ class HumanoidRobot(BaseTask):
         self.gym.end_access_image_tensors(self.sim)
 
     def _update_goals(self):
+        """
+        更新机器人的导航目标
+        
+        这个方法管理机器人在地形中的路径点导航：
+        1. 检查是否到达当前目标点
+        2. 在延迟时间后切换到下一个目标
+        3. 计算相对位置和朝向角度
+        4. 为奖励函数和观测提供目标信息
+        """
+        
+        # 检查是否已经在目标点停留足够长时间，可以切换到下一个目标
         next_flag = self.reach_goal_timer > self.cfg.env.reach_goal_delay / self.dt
-        self.cur_goal_idx[next_flag] += 1
-        self.reach_goal_timer[next_flag] = 0
+        self.cur_goal_idx[next_flag] += 1      # 切换到下一个目标点索引
+        self.reach_goal_timer[next_flag] = 0   # 重置到达目标计时器
 
-        self.reached_goal_ids = torch.norm(self.root_states[:, :2] - self.cur_goals[:, :2], dim=1) < self.cfg.env.next_goal_threshold
+        # 将目标点转换为世界坐标系
+        cur_goals_world = self.cur_goals[:, :2] + self.env_origins[:, :2]
+        next_goals_world = self.next_goals[:, :2] + self.env_origins[:, :2]
+        
+        self.reached_goal_ids = torch.norm(self.root_states[:, :2] - cur_goals_world, dim=1) < self.cfg.env.next_goal_threshold
         self.reach_goal_timer[self.reached_goal_ids] += 1
 
-        self.target_pos_rel = self.cur_goals[:, :2] - self.root_states[:, :2]
-        self.next_target_pos_rel = self.next_goals[:, :2] - self.root_states[:, :2]
+        self.target_pos_rel = cur_goals_world - self.root_states[:, :2]
+        self.next_target_pos_rel = next_goals_world - self.root_states[:, :2]
 
-        norm = torch.norm(self.target_pos_rel, dim=-1, keepdim=True)
-        target_vec_norm = self.target_pos_rel / (norm + 1e-5)
-        self.target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])
+        # 🧭 计算目标点朝向角度（从机器人指向目标点的方向）
+        # 注意：这里计算的是"导航朝向"，不是"运动命令朝向"！
+        norm = torch.norm(self.target_pos_rel, dim=-1, keepdim=True)  # 计算到目标点的距离
+        target_vec_norm = self.target_pos_rel / (norm + 1e-5)        # 归一化方向向量（避免除零）
+        self.target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])  # 计算朝向目标点的偏航角
 
-        norm = torch.norm(self.next_target_pos_rel, dim=-1, keepdim=True)
-        target_vec_norm = self.next_target_pos_rel / (norm + 1e-5)
-        self.next_target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])
+        # 🧭 计算下一个目标点的朝向角度
+        norm = torch.norm(self.next_target_pos_rel, dim=-1, keepdim=True)  # 计算到下个目标点的距离
+        target_vec_norm = self.next_target_pos_rel / (norm + 1e-5)         # 归一化方向向量
+        self.next_target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])  # 计算朝向下个目标点的偏航角
 
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
