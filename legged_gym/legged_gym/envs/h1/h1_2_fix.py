@@ -129,10 +129,10 @@ class H1_2FixCfg( LeggedRobotCfg ):
 
     class commands( LeggedRobotCfg.commands ):
         class ranges( LeggedRobotCfg.commands.ranges ):
-            lin_vel_x = [0.1, 0.8]
+            lin_vel_x = [0.1, 1.2]
             lin_vel_y = [0.0, 0.0]
             ang_vel_yaw = [0, 0]
-            heading = [0, 0]
+            heading = [-1.2, 1.2]
 
     class rewards:
         class scales:

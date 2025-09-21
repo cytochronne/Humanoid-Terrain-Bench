@@ -128,7 +128,7 @@ class LeggedRobotCfg(BaseConfig):
             height_measurements = 0.02
 
     class commands:
-        curriculum = False
+        curriculum = True
         max_curriculum = 1.
         height_adaptive_speed = True
         num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
