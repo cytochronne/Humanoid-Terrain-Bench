@@ -524,33 +524,9 @@ class HumanoidRobot(BaseTask):
         即本体感知
         """
         imu_obs = torch.stack((self.roll, self.pitch), dim=1)
-        self.delta_yaw = self.target_yaw - self.yaw
-        self.delta_next_yaw = self.next_target_yaw - self.yaw
         if self.global_counter % 5 == 0:
-            # 添加调试信息
-            # print("Robot position:", self.root_states[0, :2])  # 机器人位置 - 世界坐标系
-            # print("Env origin:", self.env_origins[0, :2])      # 环境原点 - 世界坐标系
-            # print("Base init state:", self.base_init_state[:2]) # 基础初始状态 - 相对环境原点坐标系
-            # print("Current goal (relative):", self.cur_goals[0, :2])      # 当前目标点 - 相对环境原点坐标系
-            # print("Next goal (relative):", self.next_goals[0, :2])        # 下一个目标点 - 相对环境原点坐标系
-            print("Current goal (world):", self.cur_goals[0, :2] + self.env_origins[0, :2])      # 当前目标点 - 世界坐标系
-            print("Next goal (world):", self.next_goals[0, :2] + self.env_origins[0, :2])        # 下一个目标点 - 世界坐标系
-            # print("Target pos rel:", self.target_pos_rel[0])   # 相对位置向量 - 机器人本体坐标系
-            print("Robot yaw:", self.yaw[0])                   # 机器人当前朝向 - 世界坐标系
-            print("Target yaw:", self.target_yaw[0])           # 目标朝向 - 世界坐标系
-            print("self.delta_yaw=",self.delta_yaw[0])
-            print("self.delta_next_yaw=",self.delta_next_yaw[0]) 
-            # 添加速度和指令信息
-            print("Robot linear velocity:", self.base_lin_vel[0])  # 机器人线速度 - 机器人本体坐标系
-            print("Robot angular velocity:", self.base_ang_vel[0])  # 机器人角速度 - 机器人本体坐标系
-            print("Linear velocity command X:", self.commands[0, 0])  # X方向线速度指令 - 机器人本体坐标系
-            print("Angular velocity command Yaw:", self.commands[0, 2])  # Z轴角速度指令 - 机器人本体坐标系
-            print("Heading command:", self.commands[0, 3])  # 朝向指令 - 世界坐标系
-            
-            
-            print("######################################################################")
-            
-            
+            self.delta_yaw = self.target_yaw - self.yaw
+            self.delta_next_yaw = self.next_target_yaw - self.yaw
         obs_buf = torch.cat((#skill_vector, 
                             self.base_ang_vel  * self.obs_scales.ang_vel,   #[1,3] # 3
                             imu_obs,    #[1,2]  2 只包含roll和pitch
@@ -883,11 +859,11 @@ class HumanoidRobot(BaseTask):
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt)==0)
         self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
 
-        # if self.cfg.commands.heading_command:
-        #     forward = quat_apply(self.base_quat, self.forward_vec)
-        #     heading = torch.atan2(forward[:, 1], forward[:, 0])
-        #     self.commands[:, 2] = torch.clip(0.8*wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
-        #     self.commands[:, 2] *= torch.abs(self.commands[:, 2]) > self.cfg.commands.ang_vel_clip
+        if self.cfg.commands.heading_command:
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.commands[:, 2] = torch.clip(0.8*wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
+            self.commands[:, 2] *= torch.abs(self.commands[:, 2]) > self.cfg.commands.ang_vel_clip
         
         if self.cfg.terrain.measure_heights:
             if self.global_counter % self.cfg.depth.update_interval == 0:
@@ -921,37 +897,23 @@ class HumanoidRobot(BaseTask):
             ).squeeze(1) 
         
         if self.cfg.commands.heading_command:
-            if hasattr(self, 'target_yaw') and hasattr(self, 'yaw'):
-                self.commands[env_ids, 3] = self.target_yaw[env_ids]
-                #print("using target_yaw as heading")
-            else:
-                self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            
+            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
             
             # 2. 计算当前朝向角度
-            # forward = quat_apply(self.base_quat[env_ids], self.forward_vec[env_ids])
-            # heading = torch.atan2(forward[:, 1], forward[:, 0])
+            forward = quat_apply(self.base_quat[env_ids], self.forward_vec[env_ids])
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
 
-            # #print("real_heading:", heading)
-            # #print("target_heading:", self.commands[env_ids, 3])
+            print("real_heading:", heading)
+            print("target_heading:", self.commands[env_ids, 3])
             
-            # # 3. 计算朝向误差和角速度命令
-            # heading_error = self.commands[env_ids, 3] - heading
-            # heading_error_wrapped = wrap_to_pi(heading_error)
+            # 3. 计算朝向误差和角速度命令
+            heading_error = self.commands[env_ids, 3] - heading
+            heading_error_wrapped = wrap_to_pi(heading_error)
             
-            # # 4. 应用比例控制器计算角速度
-            # angular_velocity = 0.8 * heading_error_wrapped
-            # self.commands[env_ids, 2] = torch.clip(angular_velocity, -1.0, 1.0)
-            if hasattr(self, 'target_yaw') and hasattr(self, 'yaw'):
-                print("using target_yaw as heading")
-                yaw_error = wrap_to_pi(self.commands[env_ids, 3] - self.yaw[env_ids])
-                self.commands[env_ids, 2] =  0.8 * yaw_error
-            
-            else:
-                self.commands[env_ids, 2] = torch_rand_float(
-                    self.command_ranges["ang_vel_yaw"][0],
-                    self.command_ranges["ang_vel_yaw"][1],
-                    (len(env_ids), 1), device=self.device
-                ).squeeze(1)
+            # 4. 应用比例控制器计算角速度
+            angular_velocity = 0.8 * heading_error_wrapped
+            self.commands[env_ids, 2] = torch.clip(angular_velocity, -1.0, 1.0)
             
             # 5. 死区处理（避免微小抖动）
             small_command_mask = torch.abs(self.commands[env_ids, 2]) <= self.cfg.commands.ang_vel_clip
@@ -1725,4 +1687,4 @@ class HumanoidRobot(BaseTask):
         """到达目标奖励（指数衰减，与跟踪奖励一致）"""
         distance_to_goal = torch.norm(self.root_states[:, :2] - self.cur_goals[:, :2], dim=1)
         # 使用指数衰减，距离越近奖励越高
-        return torch.exp(-distance_to_goal / 0.2)  # 0.5是衰减参数
+        return torch.exp(-distance_to_goal / 0.2)  # 0.5是衰减参）

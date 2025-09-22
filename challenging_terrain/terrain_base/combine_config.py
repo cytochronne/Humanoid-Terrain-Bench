@@ -28,9 +28,9 @@ class combine_config:
         ]
 
         proportions = [
-                ("single", 1, 0.3),#
-                ("single", 7, 0.4),#
-                ("single", 4, 0.3),#
+                ("single", 1, 0.5),#
+                #("single", 7, 0.3),#
+                ("single", 4, 0.5),#
                 # ("addition", 0, 0.5),
                 # ("multiplication", 3, 0.4),
         ]
@@ -54,6 +54,18 @@ class generator:
                                                                 difficulty=difficulty)
                 terrain.goals = goals * horizontal_scale
                 terrain.idx = id
+                if id == 7:
+                        h_start = terrain.height_field_raw[0,:].mean()
+                        h_end   = terrain.height_field_raw[-1,:].mean()
+                        # 假设期望随着 +x（行索引增加）高度升高；若当前是下降则翻转
+                        #if h_start > h_end:
+                        print("slope terrain flipped!")
+                        terrain.height_field_raw = terrain.height_field_raw[::-1, :]
+                        # 目标点也需要同步翻转其 x 方向偏移（如果在 slope 函数中按行分布）
+                        # if hasattr(terrain, "goals"):
+                        #         max_row = terrain.height_field_raw.shape[0] - 1
+                        #         # 如果 goals 使用像素行号构造，可在 slope 函数里存行索引；这里示例假设 goals[:,0] 是 x 方向真实坐标，不需要处理
+                        #         pass    
                 return terrain
 
         def addition_create(terrain,id=0,difficulty=0.5):

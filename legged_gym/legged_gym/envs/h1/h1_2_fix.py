@@ -128,11 +128,29 @@ class H1_2FixCfg( LeggedRobotCfg ):
         action_buf_len = 8
 
     class commands( LeggedRobotCfg.commands ):
+        """运动命令配置"""
+        resampling_time = 1.0         # 命令重采样时间间隔（秒）
+        heading_command = True         # 启用朝向命令模式
+        ang_vel_clip = 0.05            # 角速度命令死区阈值
+        lin_vel_clip = 0.2            # 线速度命令死区阈值
+        
+        # 策略1：智能速度生成配置
+        height_adaptive_speed = True   # 启用基于高度的自适应速度
+        speed_complexity_weight = 0.4  # 地形复杂度权重
+        speed_gradient_weight = 0.4   # 高度梯度权重  
+        speed_roughness_weight = 0.2  # 地形粗糙度权重
+
         class ranges( LeggedRobotCfg.commands.ranges ):
             lin_vel_x = [0.1, 1.2]
             lin_vel_y = [0.0, 0.0]
             ang_vel_yaw = [0, 0]
             heading = [-1.2, 1.2]
+        class max_ranges( LeggedRobotCfg.commands.max_ranges ):
+            """最大命令范围（课程学习后期或固定模式）"""
+            lin_vel_x = [0.3, 1.5]     # 前向速度范围 [m/s]
+            lin_vel_y = [0.0, 0.0]    # 侧向速度范围 [m/s]
+            ang_vel_yaw = [-0.5, 0.5]  # 偏航角速度范围 [rad/s]
+            heading = [-1.6, 1.6]     # 朝向角度范围
 
     class rewards:
         class scales:
