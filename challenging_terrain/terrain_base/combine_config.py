@@ -29,8 +29,8 @@ class combine_config:
 
         proportions = [
                 #("single", 1, 1),#
-                #("single", 7, 1),#
-                ("single", 5, 1),#
+                ("single", 7, 1),#
+                #("single", 5, 1),#
                 # ("addition", 0, 0.5),
                 # ("multiplication", 3, 0.4),
         ]

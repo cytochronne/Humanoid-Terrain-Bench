@@ -83,12 +83,16 @@ def _analyze_terrain_complexity(self):
 
 # 蒸馏
 ```python
-
+main：
 train_cfg: 记载了训练算法的配置，教师/学生/critic的输入输出维度
 有个"虚拟的estimator和depth_encoder"，说是兼容old，猜测是在蒸馏时不需要
+
+
+# 获取注册的配置 中train_cfg被重置为机器人参数文件中的训练参数了？，之后又修改了train_cfg的教师路径和教师数量
 教师路径：train_cfg.policy.teacher_model_paths = teacher_model_paths
 教师路径和数量计算在train_distill.py中由输入的路径决定
-# 获取注册的配置 中train_cfg被重置为机器人参数文件中的训练参数了？
+
+
 make_alg_runner()中在初始化MultiTeacherDistillationRunner时使用的train_cfg:
         env_cfg, train_cfg = self.get_cfgs(name)  # 获取两个配置对象
         train_cfg_dict = class_to_dict(train_cfg)
@@ -101,3 +105,46 @@ make_alg_runner()中在初始化MultiTeacherDistillationRunner时使用的train_
                 **kwargs
             )
 train_cfg又被重置为机器人参数文件中的训练参数了
+
+MultiTeacherDistillationRunner中：
+        # ========== 解析训练配置 ==========
+                self.cfg = train_cfg["runner"]
+                self.alg_cfg = train_cfg["algorithm"]
+                self.policy_cfg = train_cfg["policy"]
+
+        actor_critic = MultiTeacherStudent(
+            num_prop=env.cfg.env.n_proprio,
+            num_scan=env.cfg.env.n_scan,
+            num_critic_obs=critic_obs.shape[-1] if hasattr(critic_obs, 'shape') else env.num_obs,
+            num_priv_latent=env.cfg.env.n_priv_latent,
+            num_priv_explicit=env.cfg.env.n_priv,
+            num_hist=env.cfg.env.history_len,
+            num_actions=env.num_actions,
+            **self.policy_cfg
+            ).to(self.device)
+
+multi_teacher_student.py的MultiTeacherStudent中  这个文件很重要，输入输出都在这
+        def __init__(
+            self,
+            num_prop: int,
+            num_scan: int, 
+            num_critic_obs: int,
+            num_priv_latent: int,
+            num_priv_explicit: int,
+            num_hist: int,
+            num_actions: int,
+            num_teachers: int = 6,
+            teacher_model_paths: Optional[List[str]] = None,
+            scan_encoder_dims: List[int] = [256, 256, 256],
+            actor_hidden_dims: List[int] = [256, 256, 256], 
+            critic_hidden_dims: List[int] = [256, 256, 256],
+            teacher_hidden_dims: List[int] = [256, 256, 256],
+            activation: str = 'elu',
+            init_noise_std: float = 1.0,
+            actor_obs_normalization: bool = False,
+            critic_obs_normalization: bool = False,
+            teacher_obs_normalization: bool = False,
+            **kwargs
+        ):
+        其中teacher_model_paths怎么得到？
+        #创建teacher的actor_critic网络
