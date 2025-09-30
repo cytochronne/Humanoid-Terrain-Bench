@@ -79,6 +79,25 @@ self.measured_heights, self.measured_heights_data = self._get_heights()
 def _analyze_terrain_complexity(self):
         forward_heights = self.measured_heights[:, :self.cfg.terrain.front_points_num]  # 前方采样点
         forward_heights.shape() = [num_envs, 8]
+```
 
+# 蒸馏
+```python
 
-    
+train_cfg: 记载了训练算法的配置，教师/学生/critic的输入输出维度
+有个"虚拟的estimator和depth_encoder"，说是兼容old，猜测是在蒸馏时不需要
+教师路径：train_cfg.policy.teacher_model_paths = teacher_model_paths
+教师路径和数量计算在train_distill.py中由输入的路径决定
+# 获取注册的配置 中train_cfg被重置为机器人参数文件中的训练参数了？
+make_alg_runner()中在初始化MultiTeacherDistillationRunner时使用的train_cfg:
+        env_cfg, train_cfg = self.get_cfgs(name)  # 获取两个配置对象
+        train_cfg_dict = class_to_dict(train_cfg)
+        runner = MultiTeacherDistillationRunner(
+                env=env,
+                train_cfg=train_cfg_dict,
+                log_dir=log_dir,
+                device=args.rl_device if args is not None else "cuda:0",
+                init_wandb=init_wandb,
+                **kwargs
+            )
+train_cfg又被重置为机器人参数文件中的训练参数了
