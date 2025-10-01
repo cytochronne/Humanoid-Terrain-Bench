@@ -171,7 +171,7 @@ class TaskRegistry():
 
         env_cfg, train_cfg = self.get_cfgs(name)  # 获取两个配置对象
         train_cfg_dict = class_to_dict(train_cfg)
-
+        print("[TaskRegistry] Train config dict:", train_cfg_dict)
         # create experiment name
         experiment_name = train_cfg_dict["runner"]["experiment_name"]
         

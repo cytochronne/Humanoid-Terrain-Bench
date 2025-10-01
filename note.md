@@ -148,3 +148,24 @@ multi_teacher_student.py的MultiTeacherStudent中  这个文件很重要，输�
         ):
         其中teacher_model_paths怎么得到？
         #创建teacher的actor_critic网络
+
+```
+## 教师观测：
+```python
+multi_teacher_distillation_runner.py:
+
+        # 获取观测和动作维度 - 现在返回完整的731维观测
+        obs = env.get_observations()
+        # 现在obs是完整的731维张量，学生和教师都使用相同的观测
+        actor_obs = obs
+        # 修复：确保critic_obs不为None
+        privileged_obs = env.get_privileged_observations() if hasattr(env, 'get_privileged_observations') else None
+        critic_obs = privileged_obs if privileged_obs is not None else obs
+
+
+
+        obs = self.env.get_observations()
+        if isinstance(obs, dict):
+            actor_obs = obs.get("policy", list(obs.values())[0])
+            critic_obs = obs.get("critic", obs.get("privileged", list(obs.values())[-1]))
+            obs是字典？何意味

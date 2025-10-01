@@ -206,6 +206,24 @@ class MultiTeacherStudent(nn.Module):
         self.critic_obs_normalization = critic_obs_normalization
         self.teacher_obs_normalization = teacher_obs_normalization
         
+        # ==================== 调试开关（教师观测打印） ====================
+        # 可通过设置 self.debug_teacher_obs=True 或在 get_teacher_actions(debug_teacher_obs=True)
+        # 来打印喂给教师网络的观测（带打印次数限制，避免刷屏）
+        self.debug_teacher_obs = False
+        self.debug_teacher_obs_print_limit = 3  # 最多打印次数
+        self._teacher_obs_debug_count = 0
+
+        # ==================== 观测落盘（机器可读） ====================
+        # 若开启，将把喂给教师的观测批次（以及可选的terrain_ids）保存为 .npz 文件
+        # 可通过以下成员控制：
+        #   - self.dump_teacher_obs: 是否开启落盘
+        #   - self.teacher_obs_dump_dir: 保存目录（为空则使用 ./teacher_obs_dumps）
+        #   - self.teacher_obs_dump_limit: 最多保存批次数，避免占满磁盘
+        self.dump_teacher_obs = False
+        self.teacher_obs_dump_dir = None  # type: Optional[str]
+        self.teacher_obs_dump_limit = 3
+        self._teacher_obs_dump_count = 0
+
         # ==================== 加载教师模型 ====================
         self.loaded_teachers = False
         if teacher_model_paths:
@@ -378,7 +396,7 @@ class MultiTeacherStudent(nn.Module):
         value = self.student_critic(critic_observations)
         return value
     
-    def get_teacher_actions(self, observations, terrain_ids=None, hist_encoding=False, env=None, **kwargs):
+    def get_teacher_actions(self, observations, terrain_ids=None, hist_encoding=False, env=None, debug_teacher_obs: Optional[bool] = None, **kwargs):
         """获取教师动作（用于蒸馏训练）- 完全按照play.py的方式
         
         Args:
@@ -386,6 +404,7 @@ class MultiTeacherStudent(nn.Module):
             terrain_ids: 地形ID，用于路由到对应教师 
             hist_encoding: 是否使用历史编码
             env: 环境实例（暂未使用）
+            debug_teacher_obs: 若为True，则打印本次喂给教师的观测统计；默认继承self.debug_teacher_obs
             
         Returns:
             教师动作张量（与play.py输出完全一致）
@@ -396,6 +415,8 @@ class MultiTeacherStudent(nn.Module):
         
         batch_size = observations.shape[0]
         device = observations.device
+        if debug_teacher_obs is None:
+            debug_teacher_obs = self.debug_teacher_obs
         
         # 确保教师网络处于评估模式（与play.py一致）
         for teacher_actor in self.teacher_actors:
@@ -405,6 +426,25 @@ class MultiTeacherStudent(nn.Module):
         teacher_actions = torch.zeros(batch_size, self.num_actions, device=device)
         
         with torch.no_grad():  # 教师推理不需要梯度
+            # 可选：打印本批次观测统计（受限次数）
+            if debug_teacher_obs and self._teacher_obs_debug_count < self.debug_teacher_obs_print_limit:
+                obs_min = observations.min().item()
+                obs_max = observations.max().item()
+                obs_mean = observations.mean().item()
+                obs_std = observations.std().item()
+                print(f"[DEBUG][TeacherObs] batch obs shape={tuple(observations.shape)} min={obs_min:.4f} max={obs_max:.4f} mean={obs_mean:.4f} std={obs_std:.4f}")
+                # 打印前1条样本的前8维，便于快速对齐
+                try:
+                    print(f"[DEBUG][TeacherObs] sample0 first8={observations[0, :8].detach().cpu().numpy()}")
+                except Exception:
+                    pass
+
+                # 若开启落盘且还未超过次数限制，则保存本批次观测
+                if self.dump_teacher_obs and self._teacher_obs_dump_count < self.teacher_obs_dump_limit:
+                    try:
+                        self._dump_teacher_observations(observations, terrain_ids, tag="batch")
+                    except Exception as _e:
+                        print(f"[WARN][TeacherObs] 保存观测失败: {_e}")
             if terrain_ids is not None:
                 # 根据地形ID路由到对应教师
                 terrain_ids = terrain_ids.long()
@@ -414,6 +454,23 @@ class MultiTeacherStudent(nn.Module):
                     mask = (terrain_ids == teacher_id)
                     if mask.any():
                         obs_subset = observations[mask]
+                        # 可选：打印该教师的子批次观测统计（受限次数）
+                        if debug_teacher_obs and self._teacher_obs_debug_count < self.debug_teacher_obs_print_limit:
+                            sub_min = obs_subset.min().item()
+                            sub_max = obs_subset.max().item()
+                            sub_mean = obs_subset.mean().item()
+                            sub_std = obs_subset.std().item()
+                            print(f"[DEBUG][TeacherObs] teacher={teacher_id} subset shape={tuple(obs_subset.shape)} min={sub_min:.4f} max={sub_max:.4f} mean={sub_mean:.4f} std={sub_std:.4f}")
+                            try:
+                                print(f"[DEBUG][TeacherObs] teacher={teacher_id} subset sample0 first8={obs_subset[0, :8].detach().cpu().numpy()}")
+                            except Exception:
+                                pass
+                            # 可选：也保存该教师子批次（不强制，避免生成太多小文件）
+                            if self.dump_teacher_obs and self._teacher_obs_dump_count < self.teacher_obs_dump_limit:
+                                try:
+                                    self._dump_teacher_observations(obs_subset, torch.full((obs_subset.shape[0],), teacher_id, device=obs_subset.device), tag=f"teacher{teacher_id}")
+                                except Exception as _e:
+                                    print(f"[WARN][TeacherObs] 保存teacher={teacher_id}子批次失败: {_e}")
                         
                         # 关键修复：完全按照play.py的方式调用
                         # play.py: policy = ppo_runner.get_inference_policy(device=env.device)
@@ -428,6 +485,9 @@ class MultiTeacherStudent(nn.Module):
                             # 注意：没有eval参数，使用默认值False
                         )
                         teacher_actions[mask] = teacher_action
+                # 增加一次打印计数
+                if debug_teacher_obs:
+                    self._teacher_obs_debug_count += 1
             else:
                 # 如果没有地形信息，使用第一个教师
                 # 完全按照play.py的调用方式
@@ -437,6 +497,8 @@ class MultiTeacherStudent(nn.Module):
                     scandots_latent=None  # 没有深度潜在特征
                     # 注意：没有eval参数，使用默认值False
                 )
+                if debug_teacher_obs:
+                    self._teacher_obs_debug_count += 1
         
         # 简单的调试信息
         print(f"[DEBUG] 教师0原始输出: [{teacher_actions.min().item():.4f}, {teacher_actions.max().item():.4f}]")
@@ -444,6 +506,27 @@ class MultiTeacherStudent(nn.Module):
         print(f"[DEBUG] 教师动作均值: {teacher_actions.mean().item():.4f}, 标准差: {teacher_actions.std().item():.4f}")
         
         return teacher_actions
+
+    def _dump_teacher_observations(self, observations: torch.Tensor, terrain_ids: Optional[torch.Tensor], tag: str = "batch"):
+        """将观测保存为 .npz，便于后续用 numpy 直接读取。
+        文件命名：teacher_obs_{index}_{tag}.npz，包含：
+          - obs: float32, 形状 [B, D]
+          - terrain_ids: int64, 形状 [B]（若无则为-1）
+        """
+        dump_dir = self.teacher_obs_dump_dir or "./teacher_obs_dumps"
+        os.makedirs(dump_dir, exist_ok=True)
+        idx = self._teacher_obs_dump_count
+        path = os.path.join(dump_dir, f"teacher_obs_{idx}_{tag}.npz")
+
+        obs_np = observations.detach().cpu().to(torch.float32).numpy()
+        if terrain_ids is None:
+            tids_np = np.full((obs_np.shape[0],), -1, dtype=np.int64)
+        else:
+            tids_np = terrain_ids.detach().cpu().to(torch.long).numpy()
+
+        np.savez(path, obs=obs_np, terrain_ids=tids_np)
+        print(f"[DEBUG][TeacherObs] 已保存观测: {path} (obs shape={obs_np.shape}, terrain_ids unique={np.unique(tids_np)})")
+        self._teacher_obs_dump_count += 1
     
     def get_terrain_adaptive_weights(self, terrain_ids, temperature=1.0):
         """计算地形自适应权重（用于加权蒸馏损失）

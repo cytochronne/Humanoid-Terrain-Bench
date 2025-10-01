@@ -74,6 +74,11 @@ def play(args):
     # 获取实验ID和日志路径
     exptid = args.exptid
     log_pth = "../../logs/{}/".format(args.proj_name) + args.exptid
+    # 确保日志目录存在（用于保存观测dump文件）
+    try:
+        os.makedirs(log_pth, exist_ok=True)
+    except Exception as e:
+        print(f"[PLAY][OBS] 创建日志目录失败: {e}")
 
     # 获取环境配置和训练配置
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
@@ -113,6 +118,24 @@ def play(args):
     env: HumanoidRobot
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()  # 获取初始观测
+
+    # 调试：打印并保存初始观测信息（完整731维向量，取第0个并转CPU）
+    try:
+        print(f"[PLAY][OBS] 初始观测张量形状: {tuple(obs.shape)}")
+        if hasattr(obs, 'shape') and obs.dim() == 2:
+            print(f"[PLAY][OBS] 第0个环境的观测长度: {obs.shape[-1]}")
+            obs0_np = obs[0].detach().cpu().numpy()
+            print(f"[PLAY][OBS] 第0个环境的完整观测向量(共{obs0_np.shape[0]}维):\n{obs0_np}")
+            # 保存到文件（同一文件中累积写入）
+            dump_path = os.path.join(log_pth, "obs_dump.txt")
+            with open(dump_path, "w") as f:
+                f.write(f"# Initial observation shape: {tuple(obs.shape)}\n")
+                f.write(f"# Env0 obs length: {obs0_np.shape[0]}\n")
+                f.write("# === Initial Env0 Observation (731 dims) ===\n")
+                f.write(" ".join([str(x) for x in obs0_np.tolist()]) + "\n")
+            print(f"[PLAY][OBS] 初始观测已写入: {dump_path}")
+    except Exception as e:
+        print(f"[PLAY][OBS] 打印初始观测失败: {e}")
 
     # 加载策略模型
     train_cfg.runner.resume = True  # 设置为恢复模式
@@ -174,12 +197,36 @@ def play(args):
             
         # 执行动作，获取新的观测和奖励
         obs, _, rews, dones, infos = env.step(actions.detach())
+
+        # 首次循环时再打印一次完整观测向量并追加写入文件（避免刷屏）
+        if i == 0:
+            try:
+                print(f"[PLAY][OBS] Step {i} 后观测张量形状: {tuple(obs.shape)}")
+                if hasattr(obs, 'shape') and obs.dim() == 2:
+                    obs0_np = obs[0].detach().cpu().numpy()
+                    print(f"[PLAY][OBS] Step {i} 第0个环境完整观测(共{obs0_np.shape[0]}维):\n{obs0_np}")
+                    # 追加写入到同一文件
+                    try:
+                        dump_path = os.path.join(log_pth, "obs_dump.txt")
+                        with open(dump_path, "a") as f:
+                            f.write(f"# === After Step {i} Env0 Observation (731 dims) ===\n")
+                            f.write(" ".join([str(x) for x in obs0_np.tolist()]) + "\n")
+                        print(f"[PLAY][OBS] Step {i} 观测已追加到: {dump_path}")
+                    except Exception as e2:
+                        print(f"[PLAY][OBS] 追加写入观测失败: {e2}")
+            except Exception as e:
+                print(f"[PLAY][OBS] 打印Step {i}观测失败: {e}")
         
         # 打印环境处理后的动作
         if i % 50 == 0:  # 每50步打印一次
             processed_actions = env.actions  # 环境处理后的动作
             print(f"[PLAY] Step {i}: 环境处理后动作 [{processed_actions.min().item():.4f}, {processed_actions.max().item():.4f}]")
             print(f"[PLAY] Step {i}: 处理后均值 {processed_actions.mean().item():.4f}, 标准差 {processed_actions.std().item():.4f}")
+            # 同步打印观测统计（概览，不再打印完整731维）
+            try:
+                print(f"[PLAY][OBS] Step {i}: 观测形状 {tuple(obs.shape)}, 范围 [{obs.min().item():.4f}, {obs.max().item():.4f}], 均值 {obs.mean().item():.4f}, 标准差 {obs.std().item():.4f}")
+            except Exception:
+                pass
             print("=" * 60)
 
 if __name__ == '__main__':

@@ -70,6 +70,14 @@ class MultiTeacherDistillationRunner:
             **self.policy_cfg
         ).to(self.device)
 
+        # 可选：开启教师观测调试打印（默认打印前3次mini-batch的统计，避免刷屏）
+        try:
+            actor_critic.debug_teacher_obs = True
+            actor_critic.debug_teacher_obs_print_limit = 3
+            print("[DEBUG] 已开启教师观测打印（最多打印3次）")
+        except Exception:
+            pass
+
         # ========== 创建多教师蒸馏算法 ==========
         self.alg = MultiTeacherDistillation(
             actor_critic,
@@ -133,6 +141,7 @@ class MultiTeacherDistillationRunner:
 
         # ========== 获取初始观测 ==========
         obs = self.env.get_observations()
+
         if isinstance(obs, dict):
             actor_obs = obs.get("policy", list(obs.values())[0])
             critic_obs = obs.get("critic", obs.get("privileged", list(obs.values())[-1]))
