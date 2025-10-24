@@ -214,14 +214,8 @@ class OnPolicyRunner:
             
             # Learning step - 适配不同的算法返回值
             if hasattr(self.alg, 'use_double_critic') and self.alg.use_double_critic:
-                # PPODoubleReward返回5个值
-                mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, mean_value_loss_dense, mean_value_loss_sparse = self.alg.update()
-                mean_estimator_loss = 0.0  # 设置默认值
-                mean_disc_loss = 0.0       # 设置默认值
-                mean_disc_acc = 0.0        # 设置默认值
-                priv_reg_coef = 0.0        # 设置默认值
+                mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_discriminator_loss, mean_discriminator_acc, mean_priv_reg_loss, priv_reg_coef, mean_value_loss_dense, mean_value_loss_sparse = self.alg.update()
             else:
-                # 标准PPO返回7个值
                 mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_disc_loss, mean_disc_acc, mean_priv_reg_loss, priv_reg_coef = self.alg.update()
             if hist_encoding:
                 print("Updating dagger...")

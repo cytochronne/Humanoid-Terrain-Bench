@@ -39,19 +39,8 @@ from .N1.n1_fix import N1FixCfg,N1FixCfgPPO
 from .humanoid.humanoid_beamdojo_config import (
     HumanoidBEAMDOJOCfg, 
     HumanoidBEAMDOJOCfgPPO,
-    HumanoidBEAMDOJOFullCfg,
-    HumanoidBEAMDOJOFullCfgPPO
 )
 
-# BEAMDOJO G1 configurations  
-# from .humanoid.humanoid_beamdojo_g1_config import (
-#     HumanoidBEAMDOJOG1Cfg,
-#     HumanoidBEAMDOJOG1CfgPPO,
-#     HumanoidBEAMDOJOG1FullCfg,
-#     HumanoidBEAMDOJOG1FullCfgPPO,
-#     HumanoidBEAMDOJOG1Stage1Cfg,
-#     HumanoidBEAMDOJOG1Stage1CfgPPO
-# )
 
 import os
 
@@ -64,4 +53,3 @@ task_registry.register("n1", HumanoidRobot, N1FixCfg(), N1FixCfgPPO())
 
 # Register BEAMDOJO tasks
 task_registry.register("humanoid_beamdojo", HumanoidRobot, HumanoidBEAMDOJOCfg(), HumanoidBEAMDOJOCfgPPO())
-task_registry.register("humanoid_beamdojo_full", HumanoidRobot, HumanoidBEAMDOJOFullCfg(), HumanoidBEAMDOJOFullCfgPPO())

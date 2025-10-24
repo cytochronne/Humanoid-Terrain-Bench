@@ -278,6 +278,7 @@ class PPO:
         mean_priv_reg_loss /= num_updates
         mean_discriminator_loss /= num_updates
         mean_discriminator_acc /= num_updates
+        
         self.storage.clear()
         self.update_counter()
         return mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_discriminator_loss, mean_discriminator_acc, mean_priv_reg_loss, priv_reg_coef

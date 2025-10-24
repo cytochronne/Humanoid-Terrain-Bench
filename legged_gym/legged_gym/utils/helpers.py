@@ -196,7 +196,6 @@ def get_args():
         {"name": "--rows", "type": int, "help": "num_rows."},
         {"name": "--cols", "type": int, "help": "num_cols"},
         {"name": "--debug", "action": "store_true", "default": False, "help": "Disable wandb logging"},
-        {"name": "--proj_name", "type": str,  "default": "parkour_new", "help": "run folder name."},
         
         {"name": "--exptid", "type": str, "help": "exptid"},
         {"name": "--resumeid", "type": str, "help": "exptid"},
@@ -207,10 +206,15 @@ def get_args():
         {"name": "--nodelay", "action": "store_true", "default": False, "help": "Add action delay"},
         {"name": "--delay", "action": "store_true", "default": False, "help": "Add action delay"},
 
-        {"name": "--no_wandb", "action": "store_true", "default": False, "help": "no wandb"}
-
-
+        {"name": "--no_wandb", "action": "store_true", "default": False, "help": "no wandb"},
+    
+        {"name": "--enable_beamdojo", "action": "store_true", "default": True, "help": "enable beamdojo"},
+        {"name": "--use_double_critic", "action": "store_true", "default": True, "help": "use double critic"},
+        {"name": "--stage", "type": str, "default": "auto", "help": "stage"},
+        {"name": "--proj_name", "type": str, "default": "beamdojo", "help": "proj_name"},
+    
     ]
+    
     # parse arguments
     args = parse_arguments(
         description="RL Policy",
