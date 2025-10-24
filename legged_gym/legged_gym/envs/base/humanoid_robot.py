@@ -529,21 +529,28 @@ class HumanoidRobot(BaseTask):
         #     print("Heading command:", self.commands[0, 3])  # 朝向指令 - 世界坐标系
             
 
-        obs_buf = torch.cat((#skill_vector, 
-                            self.base_ang_vel  * self.obs_scales.ang_vel,   #[1,3] # 3
-                            imu_obs,    #[1,2]  2 只包含roll和pitch
-                            0*self.delta_yaw[:, None], # 1
-                            self.delta_yaw[:, None], # 1
-                            self.delta_next_yaw[:, None],  # 1
-                            0*self.commands[:, 0:2],  # 2
-                            self.commands[:, 0:1],  #[1,1]  # 1
-                            (self.env_class != 17).float()[:, None],  #1
-                            (self.env_class == 17).float()[:, None], # 1
-                            (self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos, # 12
-                            self.dof_vel * self.obs_scales.dof_vel,  # 12
-                            self.action_history_buf[:, -1], # 12
-                            self.contact_filt.float()-0.5, # 2
-                            ),dim=-1)
+        obs_buf = torch.cat((
+                            #skill_vector, 
+                            # self.base_ang_vel  * self.obs_scales.ang_vel,   #[1,3] # 3
+                            # imu_obs,    #[1,2]  2 只包含roll和pitch
+                            # 0*self.delta_yaw[:, None], # 1
+                            # self.delta_yaw[:, None], # 1
+                            # self.delta_next_yaw[:, None],  # 1
+                            # 0*self.commands[:, 0:2],  # 2
+                            # self.commands[:, 0:1],  #[1,1]  # 1
+                            # (self.env_class != 17).float()[:, None],  #1
+                            # (self.env_class == 17).float()[:, None], # 1
+                            # (self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos, # 12
+                            # self.dof_vel * self.obs_scales.dof_vel,  # 12
+                            # self.action_history_buf[:, -1], # 12
+                            # self.contact_filt.float()-0.5, # 2
+                            self.commands[:, 0:3],
+                            self.base_ang_vel * self.obs_scales.ang_vel,     # R^3
+                            self.projected_gravity,                           # R^3
+                            (self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos,  # R^{n_dof}
+                            self.dof_vel * self.obs_scales.dof_vel,          # R^{n_dof}
+                            self.action_history_buf[:, -1],            # R^{n_dof}
+                            ), dim=-1)
 
         priv_explicit = torch.cat((self.base_lin_vel * self.obs_scales.lin_vel,
                                    0 * self.base_lin_vel,
@@ -560,7 +567,7 @@ class HumanoidRobot(BaseTask):
             self.obs_buf = torch.cat([obs_buf, heights, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
         else:
             self.obs_buf = torch.cat([obs_buf, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
-        obs_buf[:, 6:8] = 0  
+        #obs_buf[:, 6:8] = 0  
 
         self.obs_history_buf = torch.where(
             (self.episode_length_buf <= 1)[:, None, None], 

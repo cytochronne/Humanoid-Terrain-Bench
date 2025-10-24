@@ -56,7 +56,7 @@ class LeggedRobotCfg(BaseConfig):
         n_priv_latent = 4 + 1 + 12 +12  # 特权潜在状态维度
         n_proprio = 3 + 2 + 3 + 4 + 36 + 5  # 本体感受信息维度：重力(3) + 命令(2) + 基座状态(3) + 四元数(4) + 关节(36) + 其他(5)
         history_len = 10         # 历史观测长度
-
+        
         # 总观测维度 = 本体感受 + 扫描 + 历史观测 + 潜在状态 + 特权信息
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent + n_priv
         num_privileged_obs = None  # 特权观测维度（如果不为None，step()会返回critic的特权观测）

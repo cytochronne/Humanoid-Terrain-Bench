@@ -57,7 +57,8 @@ class G1FixCfg( LeggedRobotCfg ):
         # n_priv_latent = 4 + 1 + 12 +12
         n_priv_latent = 4 + 1 + 12 + 12 # mass, fraction, motor strength1 and 2
         
-        n_proprio = 51 # 所有本体感知信息，即obs_buf
+        #n_proprio = 51 # 所有本体感知信息，即obs_buf
+        n_proprio = 45
         history_len = 10
 
         # num obs = 53+132+10*53+43+9 = 187+47+530+43+9 = 816
