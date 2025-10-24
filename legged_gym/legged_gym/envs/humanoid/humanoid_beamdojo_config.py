@@ -28,11 +28,11 @@ class HumanoidBEAMDOJOCfg(LeggedRobotCfg):
 
     class env(LeggedRobotCfg.env):
         """环境配置"""
-        num_envs = 1024
+        num_envs = 512
         episode_length_s = 40
         
         # 观测配置（根据实际humanoid机器人调整）
-        n_scan = 132
+        n_scan = 225
         n_priv = 3 + 3 + 3  # 位置(3) + 速度(3) + 其他(3)
         n_priv_latent = 4 + 1 + 12 + 12  # 潜在状态维度
         n_proprio = 45  # 实际obs_buf维度：3+3+3+12*3=45
@@ -44,6 +44,7 @@ class HumanoidBEAMDOJOCfg(LeggedRobotCfg):
         
         # 启用接触信息
         include_foot_contacts = True
+        
     class control( LeggedRobotCfg.control ):
         # PD Drive parameters:
         control_type = 'P'
@@ -64,24 +65,37 @@ class HumanoidBEAMDOJOCfg(LeggedRobotCfg):
         action_scale = 0.25
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4    
-    class terrain:
-        """地形配置 - 支持两阶段训练"""
-        mesh_type = 'trimesh'
-        horizontal_scale = 0.1
-        vertical_scale = 0.005
-        border_size = 25
-        curriculum = True
-        static_friction = 1.0
-        dynamic_friction = 1.0
-        restitution = 0.
+    
+    
+    class domain_rand(LeggedRobotCfg.domain_rand):
+        randomize_friction = True            # 随机化摩擦系数
+        friction_range = [0.8, 0.8]         # 恢复原始摩擦系数
+        randomize_base_mass = True          # 随机化质量
+        added_mass_range = [-2.0, 2.0]      # 负载质量 U(-2.0, 2.0) kg
+        randomize_base_com = True           # 随机化质心位置
+        added_com_range = [-0.05, 0.05]     # 质心偏移 U(-0.05, 0.05) m
+        push_robots = True                   # 启用外部推力（抗干扰训练）
+        push_interval_s = 8                  # 推力间隔：每8秒推一次
+        max_push_vel_xy = 0.5                # 最大推力速度：±0.5 m/s
+
+        randomize_motor = True              # 随机化电机特性
+        motor_strength_range = [0.9, 1.1]   # 电机强度噪声 U(0.9, 1.1)
         
-        # 地形类型配置
-        terrain_types = ["flat", "rough", "stairs", "obstacles"]
-        terrain_proportions = [0.3, 0.3, 0.2, 0.2]
+        randomize_actuator_offset = True    # 随机化执行器零位偏移
+        actuator_offset_range = [-0.05, 0.05]  # 执行器偏移 U(-0.05, 0.05) rad
         
-        # 支持两阶段地形切换
-        stage1_terrain_types = ["flat"]  # Stage1仅使用平坦地形
-        stage2_terrain_types = ["rough", "stairs", "obstacles"]  # Stage2使用复杂地形
+        randomize_pd_gains = True           # 随机化PD增益
+        pd_gain_range = [0.85, 1.15]        # Kp/Kd噪声因子 U(0.85, 1.15)
+
+        # 动作延迟相关参数（BeamDojo域随机化）
+        delay_update_global_steps = 24 * 8000  # 延迟更新的全局步数
+        action_delay = True                  # 启用动作延迟（抗干扰训练）
+        action_curr_step = [1, 1, 2]        # 课程学习：保守渐进（20ms→20ms→40ms）
+        action_curr_step_scratch = [0, 1, 1] # 从头训练时的延迟步数（0ms→20ms→20ms）
+        action_delay_view = 1               # 动作延迟视图
+        action_buf_len = 8                  # 动作缓冲区长度
+
+    
     class asset( LeggedRobotCfg.asset ):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_12dof_with_hand.urdf'
         name = "g1_fix_upper"
@@ -99,12 +113,12 @@ class HumanoidBEAMDOJOCfg(LeggedRobotCfg):
         lin_vel_clip = 0.1            # 线速度命令死区阈值
         
         # 策略1：智能速度生成配置
-        height_adaptive_speed = True   # 启用基于高度的自适应速度
+        height_adaptive_speed = False   # 启用基于高度的自适应速度
         speed_complexity_weight = 0.4  # 地形复杂度权重
         speed_gradient_weight = 0.4   # 高度梯度权重  
         speed_roughness_weight = 0.2  # 地形粗糙度权重
         class ranges( LeggedRobotCfg.commands.ranges ):
-            lin_vel_x = [0.1, 0.6] # min max [m/s]
+            lin_vel_x = [0.1, 1.0] # min max [m/s]
             lin_vel_y = [0.0, 0.0]   # min max [m/s]
             ang_vel_yaw = [0, 0]    # min max [rad/s]
             heading = [-1.2, 1.2]
@@ -236,7 +250,7 @@ class HumanoidBEAMDOJOCfgPPO(LeggedRobotCfgPPO):
         tanh_encoder_output = False  # 编码器输出是否使用tanh激活
         
         # 支持双Critic的编码器
-        use_double_critic = False  # 在这里可以启用双Critic
+        use_double_critic = True  # 在这里可以启用双Critic
         
     class algorithm(LeggedRobotCfgPPO.algorithm):
         """BEAMDOJO PPO算法配置"""
@@ -255,15 +269,10 @@ class HumanoidBEAMDOJOCfgPPO(LeggedRobotCfgPPO):
         max_grad_norm = 1.
         
         # BEAMDOJO双Critic配置
-        use_double_critic = False      # 设置为True启用双Critic
+        use_double_critic = True      # 设置为True启用双Critic
         dense_value_loss_coef = 1.0    # 密集奖励价值损失系数
         sparse_value_loss_coef = 1.0   # 稀疏奖励价值损失系数
         advantage_merge_weight = 0.5   # 优势函数合并权重
-        
-        # DAgger参数 (继承自基类，确保存在)
-        dagger_update_freq = 20
-        priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
-        priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
         
     class runner(LeggedRobotCfgPPO.runner):
         """训练运行器配置"""
@@ -325,38 +334,3 @@ class HumanoidBEAMDOJOCfgPPO(LeggedRobotCfgPPO):
                 lin_vel_x = [-1.0, 1.0]
                 lin_vel_y = [0.0, 0.0]     # 固定为0
                 ang_vel_yaw = [0.0, 0.0]   # 固定为0
-
-
-# 启用BEAMDOJO功能的完整配置示例
-class HumanoidBEAMDOJOFullCfg(HumanoidBEAMDOJOCfg):
-    """启用所有BEAMDOJO功能的完整配置"""
-    pass
-
-class HumanoidBEAMDOJOFullCfgPPO(HumanoidBEAMDOJOCfgPPO):
-    """启用所有BEAMDOJO功能的完整PPO配置"""
-    
-    class policy(HumanoidBEAMDOJOCfgPPO.policy):
-        use_double_critic = True  # 启用双Critic
-        tanh_encoder_output = False  # 确保参数存在
-        
-    class algorithm(HumanoidBEAMDOJOCfgPPO.algorithm):
-        use_double_critic = True  # 启用双Critic算法
-        # 确保所有基类参数都被继承
-        
-    class runner(HumanoidBEAMDOJOCfgPPO.runner):
-        policy_class_name = 'ActorCriticRMADoubleReward'  # 使用双Critic策略
-        algorithm_class_name = 'PPODoubleReward'          # 使用双Critic算法
-        experiment_name = 'humanoid_beamdojo_full'
-        
-    class estimator(HumanoidBEAMDOJOCfgPPO.estimator):
-        """状态估计器配置"""
-        priv_states_dim = HumanoidBEAMDOJOFullCfg.env.n_priv
-        num_prop = HumanoidBEAMDOJOFullCfg.env.n_proprio
-        num_scan = HumanoidBEAMDOJOFullCfg.env.n_scan
-
-    class depth_encoder(HumanoidBEAMDOJOCfgPPO.depth_encoder):
-        """深度编码器配置"""
-        pass  # 使用基类配置
-        
-    class training(HumanoidBEAMDOJOCfgPPO.training):
-        enable_two_stage = True   # 启用两阶段训练

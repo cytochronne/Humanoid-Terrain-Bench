@@ -97,15 +97,27 @@ class PPODoubleReward:
         self.use_separate_value_loss = use_separate_value_loss
         self.use_double_critic = actor_critic.use_double_critic
 
-        # 其他参数
-        self.dagger_update_freq = dagger_update_freq
+        # Adaptation
+        self.hist_encoder_optimizer = optim.Adam(self.actor_critic.actor.history_encoder.parameters(), lr=learning_rate)
         self.priv_reg_coef_schedual = priv_reg_coef_schedual
         self.counter = 0
-
-        # 为向后兼容保留的参数
+        
+         # Estimator
         self.estimator = estimator
-        self.depth_encoder = depth_encoder
-        self.depth_actor = depth_actor
+        self.priv_states_dim = estimator_paras["priv_states_dim"]
+        self.num_prop = estimator_paras["num_prop"]
+        self.num_scan = estimator_paras["num_scan"]
+        self.estimator_optimizer = optim.Adam(self.estimator.parameters(), lr=estimator_paras["learning_rate"])
+        self.train_with_estimated_states = estimator_paras["train_with_estimated_states"]
+
+        self.if_depth = depth_encoder != None
+        if self.if_depth:
+            self.depth_encoder = depth_encoder
+            self.depth_encoder_optimizer = optim.Adam(self.depth_encoder.parameters(), lr=depth_encoder_paras["learning_rate"])
+            self.depth_encoder_paras = depth_encoder_paras
+            self.depth_actor = depth_actor
+            self.depth_actor_optimizer = optim.Adam([*self.depth_actor.parameters(), *self.depth_encoder.parameters()], lr=depth_encoder_paras["learning_rate"])
+
 
         print(f"PPODoubleReward initialized with use_double_critic={self.use_double_critic}")
         if self.use_double_critic:
@@ -189,14 +201,14 @@ class PPODoubleReward:
             self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
-        """更新网络，支持双Critic训练"""
         mean_value_loss = 0
         mean_value_loss_dense = 0
         mean_value_loss_sparse = 0
         mean_surrogate_loss = 0
         mean_estimator_loss = 0
         mean_priv_reg_loss = 0
-
+        mean_discriminator_loss = 0
+        mean_discriminator_acc = 0
         # 根据是否使用双Critic选择合适的generator
         if self.use_double_critic and hasattr(self.storage, 'mini_batch_generator_double'):
             generator = self.storage.mini_batch_generator_double(self.num_mini_batches, self.num_learning_epochs)
@@ -228,23 +240,47 @@ class PPODoubleReward:
                     returns_dense_batch = returns_batch
                     returns_sparse_batch = torch.zeros_like(returns_batch)
 
-            self.actor_critic.act(obs_batch, masks=masks_batch, 
-                                hidden_states=hid_states_batch[0] if hid_states_batch else None)
+            self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0] if hid_states_batch else None)
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-            
             if self.use_double_critic:
-                value_batch1, value_batch2 = self.actor_critic.evaluate(critic_obs_batch, 
-                                                                       masks=masks_batch,
-                                                                       hidden_states=hid_states_batch[1] if hid_states_batch else None)
+                value_batch1, value_batch2 = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch,hidden_states=hid_states_batch[1] if hid_states_batch else None)
             else:
-                value_batch = self.actor_critic.evaluate(critic_obs_batch,
-                                                        masks=masks_batch,
-                                                        hidden_states=hid_states_batch[1] if hid_states_batch else None)
-
+                value_batch = self.actor_critic.evaluate(critic_obs_batch,masks=masks_batch,hidden_states=hid_states_batch[1] if hid_states_batch else None)
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std
             entropy_batch = self.actor_critic.entropy
+            
+            # Adaptation module update
+            priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
+            with torch.inference_mode():
+                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+            priv_reg_loss = (priv_latent_batch - hist_latent_batch.detach()).norm(p=2, dim=1).mean()
+            priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0) / self.priv_reg_coef_schedual[3], 1)
+            priv_reg_coef = self.priv_reg_coef_schedual[0] + (self.priv_reg_coef_schedual[1] - self.priv_reg_coef_schedual[0]) * priv_reg_stage
 
+            # Estimator
+            priv_states_predicted = self.estimator(obs_batch[:, :self.num_prop])  # obs in batch is with true priv_states
+            estimator_loss = (priv_states_predicted - obs_batch[:, self.num_prop+self.num_scan:self.num_prop+self.num_scan+self.priv_states_dim]).pow(2).mean()
+            self.estimator_optimizer.zero_grad()
+            estimator_loss.backward()
+            nn.utils.clip_grad_norm_(self.estimator.parameters(), self.max_grad_norm)
+            self.estimator_optimizer.step()
+            
+            # KL
+            if self.desired_kl != None and self.schedule == 'adaptive':
+                    with torch.inference_mode():
+                        kl = torch.sum(
+                            torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
+                        kl_mean = torch.mean(kl)
+
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                        
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = self.learning_rate
+                            
             # Surrogate loss (policy loss)
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             
@@ -291,14 +327,6 @@ class PPODoubleReward:
                 else:
                     value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            # Adaptation module update (保持与原版一致)
-            priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
-            with torch.inference_mode():
-                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
-            priv_reg_loss = (priv_latent_batch - hist_latent_batch.detach()).norm(p=2, dim=1).mean()
-            priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0) / self.priv_reg_coef_schedual[3], 1)
-            priv_reg_coef = self.priv_reg_coef_schedual[0] + (self.priv_reg_coef_schedual[1] - self.priv_reg_coef_schedual[0]) * priv_reg_stage
-
             # Total loss
             loss = surrogate_loss + \
                    self.value_loss_coef * value_loss - \
@@ -313,12 +341,18 @@ class PPODoubleReward:
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
+            mean_estimator_loss += estimator_loss.item()
             mean_priv_reg_loss += priv_reg_loss.item()
+            mean_discriminator_loss += 0
+            mean_discriminator_acc += 0
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        mean_estimator_loss /= num_updates
         mean_priv_reg_loss /= num_updates
+        mean_discriminator_loss /= num_updates
+        mean_discriminator_acc /= num_updates
         
         if self.use_double_critic:
             mean_value_loss_dense /= num_updates
@@ -327,17 +361,41 @@ class PPODoubleReward:
         self.storage.clear()
         self.update_counter()
 
-        if self.use_double_critic:
-            return mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, mean_value_loss_dense, mean_value_loss_sparse
+        if self.use_double_critic: 
+            return mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_discriminator_loss, mean_discriminator_acc, mean_priv_reg_loss, priv_reg_coef, mean_value_loss_dense, mean_value_loss_sparse
         else:
-            return mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss
+            return mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_discriminator_loss, mean_discriminator_acc, mean_priv_reg_loss, priv_reg_coef
 
     def update_counter(self):
         self.counter += 1
-
-    # 保持与原版PPO的向后兼容性
+     
     def update_dagger(self):
-        return self.update()
+        mean_hist_latent_loss = 0
+        if self.actor_critic.is_recurrent:
+            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        else:
+            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+                with torch.inference_mode():
+                    self.actor_critic.act(obs_batch, hist_encoding=True, masks=masks_batch, hidden_states=hid_states_batch[0])
+
+                # Adaptation module update
+                with torch.inference_mode():
+                    priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
+                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+                hist_latent_loss = (priv_latent_batch.detach() - hist_latent_batch).norm(p=2, dim=1).mean()
+                self.hist_encoder_optimizer.zero_grad()
+                hist_latent_loss.backward()
+                nn.utils.clip_grad_norm_(self.actor_critic.actor.history_encoder.parameters(), self.max_grad_norm)
+                self.hist_encoder_optimizer.step()
+                
+                mean_hist_latent_loss += hist_latent_loss.item()
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        mean_hist_latent_loss /= num_updates
+        self.storage.clear()
+        self.update_counter()
+        return mean_hist_latent_loss
 
     def update_depth_encoder(self, depth_latent_batch, scandots_latent_batch):
         pass

@@ -1049,9 +1049,11 @@ class HumanoidRobot(BaseTask):
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         if self.cfg.terrain.measure_heights:
             self.height_points, self.height_points_data = self._init_height_points()
+            # 初始化存储上一次高度的变量（用于地图更新延迟）
+            self.last_heights = torch.zeros(self.num_envs, self.num_height_points, dtype=torch.float, device=self.device)
+            self.last_heights_data = torch.zeros(self.num_envs, self.num_height_points_data, dtype=torch.float, device=self.device)
         # self.measured_heights = 0
         
-
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         self.default_dof_pos_all = torch.zeros(self.num_envs, self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
@@ -1073,6 +1075,29 @@ class HumanoidRobot(BaseTask):
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
         self.default_dof_pos_all[:] = self.default_dof_pos[0]
+        
+        # === 执行器零位偏移（Actuator Offset）域随机化 ===
+        if hasattr(self.cfg.domain_rand, 'randomize_actuator_offset') and self.cfg.domain_rand.randomize_actuator_offset:
+            offset_range = self.cfg.domain_rand.actuator_offset_range
+            actuator_offset = torch_rand_float(offset_range[0], offset_range[1], 
+                                              (self.num_envs, self.num_dof), device=self.device)
+            self.default_dof_pos_all += actuator_offset
+            print(f"[Domain Rand] Actuator offset enabled: U({offset_range[0]:.3f}, {offset_range[1]:.3f}) rad")
+        
+        # === PD增益（Kp/Kd）域随机化 ===
+        if hasattr(self.cfg.domain_rand, 'randomize_pd_gains') and self.cfg.domain_rand.randomize_pd_gains:
+            gain_range = self.cfg.domain_rand.pd_gain_range
+            kp_factor = torch_rand_float(gain_range[0], gain_range[1], 
+                                        (self.num_envs, self.num_dof), device=self.device)
+            kd_factor = torch_rand_float(gain_range[0], gain_range[1], 
+                                        (self.num_envs, self.num_dof), device=self.device)
+            self.p_gains = self.p_gains.unsqueeze(0) * kp_factor
+            self.d_gains = self.d_gains.unsqueeze(0) * kd_factor
+            print(f"[Domain Rand] PD gains randomization enabled: U({gain_range[0]:.3f}, {gain_range[1]:.3f})")
+        else:
+            # 如果不随机化，也需要扩展维度以匹配 num_envs
+            self.p_gains = self.p_gains.unsqueeze(0).repeat(self.num_envs, 1)
+            self.d_gains = self.d_gains.unsqueeze(0).repeat(self.num_envs, 1)
 
         self.height_update_interval = 1
         if hasattr(self.cfg.env, "height_update_dt"):
@@ -1114,9 +1139,9 @@ class HumanoidRobot(BaseTask):
         """
         plane_params = gymapi.PlaneParams()
         plane_params.normal = gymapi.Vec3(0.0, 0.0, 1.0)
-        plane_params.static_friction = self.cfg.terrain.static_friction
-        plane_params.dynamic_friction = self.cfg.terrain.dynamic_friction
-        plane_params.restitution = self.cfg.terrain.restitution
+        plane_params.static_friction = torch_rand_float(self.cfg.terrain.static_friction[0], self.cfg.terrain.static_friction[1], (1, 1), device=self.device).item()
+        plane_params.dynamic_friction = torch_rand_float(self.cfg.terrain.dynamic_friction[0], self.cfg.terrain.dynamic_friction[1], (1, 1), device=self.device).item()
+        plane_params.restitution = torch_rand_float(self.cfg.terrain.restitution[0], self.cfg.terrain.restitution[1], (1, 1), device=self.device).item()
         self.gym.add_ground(self.sim, plane_params)
 
     def _create_trimesh(self):
@@ -1126,13 +1151,12 @@ class HumanoidRobot(BaseTask):
         tm_params = gymapi.TriangleMeshParams()
         tm_params.nb_vertices = self.terrain.vertices.shape[0]
         tm_params.nb_triangles = self.terrain.triangles.shape[0]
-
         tm_params.transform.p.x = -self.terrain.cfg.border_size 
         tm_params.transform.p.y = -self.terrain.cfg.border_size
         tm_params.transform.p.z = 0.0
-        tm_params.static_friction = self.cfg.terrain.static_friction
-        tm_params.dynamic_friction = self.cfg.terrain.dynamic_friction
-        tm_params.restitution = self.cfg.terrain.restitution
+        tm_params.static_friction = torch_rand_float(self.cfg.terrain.static_friction[0], self.cfg.terrain.static_friction[1], (1, 1), device=self.device).item()
+        tm_params.dynamic_friction = torch_rand_float(self.cfg.terrain.dynamic_friction[0], self.cfg.terrain.dynamic_friction[1], (1, 1), device=self.device).item()
+        tm_params.restitution = torch_rand_float(self.cfg.terrain.restitution[0], self.cfg.terrain.restitution[1], (1, 1), device=self.device).item()
         print("Adding trimesh to simulation...")
         self.gym.add_triangle_mesh(self.sim, self.terrain.vertices.flatten(order='C'), self.terrain.triangles.flatten(order='C'), tm_params)  
         print("Trimesh added")
@@ -1338,24 +1362,42 @@ class HumanoidRobot(BaseTask):
         self.cfg.domain_rand.push_interval = np.ceil(self.cfg.domain_rand.push_interval_s / self.dt)
  
     def _draw_height_samples(self):
-        """ Draws visualizations for dubugging (slows down simulation a lot).
-            Default behaviour: draws height measurement points
+        """ 
+        可视化高度采样点（用于调试，会降低仿真速度）
+        显示策略网络实际看到的数据（包括所有域随机化效果）
         """
         # draw height lines
         if not self.terrain.cfg.measure_heights:
             return
         self.gym.refresh_rigid_body_state_tensor(self.sim)
-        sphere_geom = gymutil.WireframeSphereGeometry(0.02, 32,   32, None, color=(255, 0, 0))
+        sphere_geom = gymutil.WireframeSphereGeometry(0.02, 32, 32, None, color=(255, 0, 0))
         i = self.lookat_id
         base_pos = (self.root_states[i, :3]).cpu().numpy()
         heights = self.measured_heights[i].cpu().numpy()
-        height_points = quat_apply_yaw(self.base_quat[i].repeat(heights.shape[0]), self.height_points[i]).cpu().numpy()
+        
+        # 直接使用已经计算好的世界坐标系采样点（避免重复计算）
+        if hasattr(self, 'height_points_world'):
+            height_points = self.height_points_world[i].cpu().numpy()
+        else:
+            # 备用方案：如果世界坐标点不存在，使用原始方法
+            height_points_offset = self.height_points[i] + base_pos
+            height_points = quat_apply_yaw(self.base_quat[i].repeat(heights.shape[0]), 
+                                          height_points_offset).cpu().numpy()
+        
         if self.save:
+            # 数据记录：使用已经计算好的世界坐标系数据点
             heights = self.measured_heights_data[i].cpu().numpy()
-            height_points = quat_apply_yaw(self.base_quat[i].repeat(heights.shape[0]), self.height_points_data[i]).cpu().numpy()
+            if hasattr(self, 'height_points_data_world'):
+                height_points = self.height_points_data_world[i].cpu().numpy()
+            else:
+                # 备用方案
+                height_points_offset = self.height_points_data[i] + base_pos
+                height_points = quat_apply_yaw(self.base_quat[i].repeat(heights.shape[0]), 
+                                              height_points_offset).cpu().numpy()
+        
         for j in range(heights.shape[0]):
-            x = height_points[j, 0] + base_pos[0]
-            y = height_points[j, 1] + base_pos[1]
+            x = height_points[j, 0]
+            y = height_points[j, 1]
             z = heights[j]
             sphere_pose = gymapi.Transform(gymapi.Vec3(x, y, z), r=None)
             gymutil.draw_lines(sphere_geom, self.gym, self.viewer, self.envs[i], sphere_pose)
@@ -1429,13 +1471,13 @@ class HumanoidRobot(BaseTask):
         points_data = torch.zeros(self.num_envs, self.num_height_points_data, 3, device=self.device, requires_grad=False)
 
         for i in range(self.num_envs):
-            offset = torch_rand_float(-self.cfg.terrain.measure_horizontal_noise, self.cfg.terrain.measure_horizontal_noise, (self.num_height_points,2), device=self.device).squeeze()
+            offset = torch_rand_float(-self.cfg.terrain.measure_horizontal_offset, self.cfg.terrain.measure_horizontal_offset, (self.num_height_points,2), device=self.device).squeeze()
             xy_noise = torch_rand_float(-self.cfg.terrain.measure_horizontal_noise, self.cfg.terrain.measure_horizontal_noise, (self.num_height_points,2), device=self.device).squeeze() + offset
             points[i, :, 0] = grid_x.flatten() + xy_noise[:, 0]
             points[i, :, 1] = grid_y.flatten() + xy_noise[:, 1]
 
             # visualize saved height point
-            offset = torch_rand_float(-self.cfg.terrain.measure_horizontal_noise, self.cfg.terrain.measure_horizontal_noise, (self.num_height_points_data,2), device=self.device).squeeze()
+            offset = torch_rand_float(-self.cfg.terrain.measure_horizontal_offset, self.cfg.terrain.measure_horizontal_offset, (self.num_height_points,2), device=self.device).squeeze()
             xy_noise = torch_rand_float(-self.cfg.terrain.measure_horizontal_noise, self.cfg.terrain.measure_horizontal_noise, (self.num_height_points_data,2), device=self.device).squeeze() + offset
             points_data[i, :, 0] = grid_x_data.flatten() #+ xy_noise[:, 0]
             points_data[i, :, 1] = grid_y_data.flatten() #+ xy_noise[:, 1]
@@ -1449,52 +1491,166 @@ class HumanoidRobot(BaseTask):
             return torch.zeros_like(foot_contacts_bool).to(self.device)
 
     def _get_heights(self, env_ids=None):
-        """ Samples heights of the terrain at required points around each robot.
-            The points are offset by the base's position and rotated by the base's yaw
-
-        Args:
-            env_ids (List[int], optional): Subset of environments for which to return the heights. Defaults to None.
-
-        Raises:
-            NameError: [description]
-
-        Returns:
-            [type]: [description]
         """
+        采样机器人周围的地形高度
+        功能：在机器人周围的指定点采样地形高度，用于策略观测和数据记录
+        返回：
+            heights: 策略观测用的高度数据（含域随机化噪声）
+            heights_data: 数据集记录用的高度数据（不含噪声）
+        """
+        # ========================================
+        # 第一步：准备域随机化参数
+        # ========================================
+        
+        # 1.1 Yaw旋转噪声：模拟IMU漂移（rad）
+        yaw_noise = torch_rand_float(-self.terrain.cfg.measure_map_yaw_noise,
+                                     self.terrain.cfg.measure_map_yaw_noise,
+                                     (self.num_envs, 1), device=self.device)
+        cos_yaw = torch.cos(yaw_noise)
+        sin_yaw = torch.sin(yaw_noise)
+        
+        # 1.2 Roll/Pitch倾斜噪声：模拟姿态估计误差（rad）
+        roll_pitch_noise = torch_rand_float(-self.terrain.cfg.measure_map_roll_pitch_noise,
+                                           self.terrain.cfg.measure_map_roll_pitch_noise,
+                                           (self.num_envs, 2), device=self.device)
+        pitch_noise = roll_pitch_noise[:, 0].unsqueeze(1)  # 绕Y轴旋转
+        roll_noise = roll_pitch_noise[:, 1].unsqueeze(1)   # 绕X轴旋转
+        
+        # 1.3 垂直偏移和噪声：模拟高度测量误差（m）
+        vertical_offset = torch_rand_float(-self.terrain.cfg.measure_vertical_offset,
+                                          self.terrain.cfg.measure_vertical_offset,
+                                          (self.num_envs, 1), device=self.device)
+        vertical_noise = torch_rand_float(-self.terrain.cfg.measure_vertical_noise,
+                                         self.terrain.cfg.measure_vertical_noise,
+                                         (self.num_envs, self.num_height_points), device=self.device)
+        
+        # ========================================
+        # 第二步：在机体坐标系应用Yaw旋转噪声
+        # ========================================
+        
+        # 获取需要处理的环境索引
+        num_envs_process = len(env_ids) if env_ids else self.num_envs
+        env_slice = env_ids if env_ids else slice(None)
+        
+        # 2.1 对策略观测点应用Yaw旋转（机体坐标系 -> 旋转后的机体坐标系）
+        height_points_body = self.height_points[env_slice]  # 原始机体坐标系采样点
+        x_body = height_points_body[:, :, 0]
+        y_body = height_points_body[:, :, 1]
+        
+        # 应用2D旋转矩阵：[x', y'] = [cos(θ) -sin(θ); sin(θ) cos(θ)] * [x, y]
+        height_points_rotated = height_points_body.clone()
+        yaw_slice = env_ids if env_ids else slice(None)
+        height_points_rotated[:, :, 0] = cos_yaw[yaw_slice] * x_body - sin_yaw[yaw_slice] * y_body
+        height_points_rotated[:, :, 1] = sin_yaw[yaw_slice] * x_body + cos_yaw[yaw_slice] * y_body
+        
+        # 2.2 对数据记录点不应用噪声（保持原始）
+        height_points_data = self.height_points_data[env_slice]
+        
+        # ========================================
+        # 第三步：转换到世界坐标系
+        # ========================================
+        
+        # 3.1 策略观测点：先应用偏移，再围绕测量点中心旋转
+        base_quat_repeated = self.base_quat[env_slice].repeat(1, self.num_height_points)
+        height_points_offset = height_points_rotated + self.root_states[env_slice, :3].unsqueeze(1)
+        
+        # 围绕测量点中心旋转：计算测量点中心，平移到原点，旋转，再平移回去
+        measurement_center = torch.mean(height_points_offset, dim=1, keepdim=True)  # [envs, 1, 3]
+        points_centered = height_points_offset - measurement_center  # 平移到原点
+        points_rotated = quat_apply_yaw(base_quat_repeated, points_centered)  # 围绕原点旋转
+        points_world = points_rotated + measurement_center  # 平移回去
+        
+        # 3.2 数据记录点：先应用偏移，再围绕测量点中心旋转
+        base_quat_data_repeated = self.base_quat[env_slice].repeat(1, self.num_height_points_data)
+        height_points_data_offset = height_points_data + self.root_states[env_slice, :3].unsqueeze(1)
+        
+        # 围绕测量点中心旋转
+        measurement_center_data = torch.mean(height_points_data_offset, dim=1, keepdim=True)
+        points_data_centered = height_points_data_offset - measurement_center_data
+        points_data_rotated = quat_apply_yaw(base_quat_data_repeated, points_data_centered)
+        points_data_world = points_data_rotated + measurement_center_data
+        
+        # 保存世界坐标系的采样点（用于可视化，避免重复计算）
+        if env_ids is None:
+            self.height_points_world = points_world
+            self.height_points_data_world = points_data_world
 
-        if env_ids:
-            points = quat_apply_yaw(self.base_quat[env_ids].repeat(1, self.num_height_points), self.height_points[env_ids]) + (self.root_states[env_ids, :3]).unsqueeze(1)
-            points_data = quat_apply_yaw(self.base_quat[env_ids].repeat(1, self.num_height_points_data), self.height_points_data[env_ids]) + (self.root_states[env_ids, :3]).unsqueeze(1)
-        else:
-            points = quat_apply_yaw(self.base_quat.repeat(1, self.num_height_points), self.height_points) + (self.root_states[:, :3]).unsqueeze(1)
-            points_data = quat_apply_yaw(self.base_quat.repeat(1, self.num_height_points_data), self.height_points_data) + (self.root_states[:, :3]).unsqueeze(1)
-
-        points += self.terrain.cfg.border_size
-        points = (points/self.terrain.cfg.horizontal_scale).long()
-        px = points[:, :, 0].view(-1)
-        py = points[:, :, 1].view(-1)
-        px = torch.clip(px, 0, self.height_samples.shape[0]-2)
-        py = torch.clip(py, 0, self.height_samples.shape[1]-2)
-
+        # ========================================
+        # 第四步：从世界坐标系转换到网格索引，并采样高度
+        # ========================================
+        
+        # 4.1 策略观测点：世界坐标系 -> 网格索引
+        points_grid = points_world + self.terrain.cfg.border_size  # 加上边界偏移
+        points_grid = (points_grid / self.terrain.cfg.horizontal_scale).long()  # 转换为网格索引
+        px = torch.clip(points_grid[:, :, 0].view(-1), 0, self.height_samples.shape[0]-2)
+        py = torch.clip(points_grid[:, :, 1].view(-1), 0, self.height_samples.shape[1]-2)
+        
+        # 4.2 采样高度（三角形插值取最小值，保守估计）
         heights1 = self.height_samples[px, py]
         heights2 = self.height_samples[px+1, py]
         heights3 = self.height_samples[px, py+1]
-        heights = torch.min(heights1, heights2)
-        heights = torch.min(heights, heights3)
-
-        points_data += self.terrain.cfg.border_size
-        points_data = (points_data/self.terrain.cfg.horizontal_scale).long()
-        px_data = points_data[:, :, 0].view(-1)
-        py_data = points_data[:, :, 1].view(-1)
-        px_data = torch.clip(px_data, 0, self.height_samples.shape[0]-2)
-        py_data = torch.clip(py_data, 0, self.height_samples.shape[1]-2)
+        heights = torch.min(torch.min(heights1, heights2), heights3)
+        heights = heights.view(num_envs_process, -1) * self.terrain.cfg.vertical_scale  # 转换为米
+        
+        # ========================================
+        # 第五步：应用高度域随机化（在高度值上）
+        # ========================================
+        
+        # 5.1 垂直偏移：系统性高度误差（所有点统一偏移）
+        heights += vertical_offset[env_slice]
+        
+        # 5.2 垂直噪声：每个采样点独立的测量抖动
+        heights += vertical_noise[env_slice]
+        
+        # 5.3 Roll/Pitch倾斜噪声：模拟地图在俯仰、滚转方向的旋转误差
+        # 效果：高度随着X/Y位置产生线性偏移
+        # 公式：height_offset = pitch × x_position + roll × y_position
+        tilt_offset = (pitch_noise[env_slice] * height_points_rotated[:, :, 0] + 
+                      roll_noise[env_slice] * height_points_rotated[:, :, 1])
+        heights += tilt_offset
+        
+        # 5.4 支撑面扩展：LiDAR平滑化（以一定概率触发）
+        # TODO: 当前实现理解有误，需要重新实现
+        # 正确含义：将邻近有效落脚点随机扩展为有效点，模拟LiDAR数据后处理的平滑效应
+        # if torch.rand(1).item() < self.terrain.cfg.foothold_extension_prob:
+        #     kernel_size = 3
+        #     heights = torch.nn.functional.max_pool1d(
+        #         heights.unsqueeze(1), kernel_size=kernel_size, stride=1, 
+        #         padding=kernel_size//2).squeeze(1)
+        
+        # ========================================
+        # 第六步：数据集记录用的高度采样（不添加域随机化噪声）
+        # ========================================
+        
+        # 6.1 世界坐标系 -> 网格索引
+        points_data_grid = points_data_world + self.terrain.cfg.border_size
+        points_data_grid = (points_data_grid / self.terrain.cfg.horizontal_scale).long()
+        px_data = torch.clip(points_data_grid[:, :, 0].view(-1), 0, self.height_samples.shape[0]-2)
+        py_data = torch.clip(points_data_grid[:, :, 1].view(-1), 0, self.height_samples.shape[1]-2)
+        
+        # 6.2 采样高度（无噪声）
         heights1_data = self.height_samples[px_data, py_data]
         heights2_data = self.height_samples[px_data+1, py_data]
         heights3_data = self.height_samples[px_data, py_data+1]
-        heights_data = torch.min(heights1_data, heights2_data)
-        heights_data = torch.min(heights_data, heights3_data)
+        heights_data = torch.min(torch.min(heights1_data, heights2_data), heights3_data)
+        heights_data = heights_data.view(num_envs_process, -1) * self.terrain.cfg.vertical_scale
 
-        return heights.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale, heights_data.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale
+        # ========================================
+        # 第七步：地图更新延迟（Map Repeat）
+        # ========================================
+        # 模拟真实传感器地图刷新滞后，以一定概率返回上一次的高度数据
+        if torch.rand(1).item() < self.terrain.cfg.map_repeat_prob:
+            # 使用上一次缓存的高度数据（地图未刷新）
+            heights_return = self.last_heights
+            heights_data_return = self.last_heights_data
+        else:
+            # 使用当前采样的新数据，并更新缓存
+            self.last_heights = heights
+            self.last_heights_data = heights_data
+            heights_return = heights
+            heights_data_return = heights_data
+        # print('heights_return', heights_return)  # 调试用
+        return heights_return, heights_data_return
 
     #------------ reward functions----------------
     def _reward_tracking_lin_vel(self):

@@ -341,39 +341,64 @@ class single_terrain:
         return terrain,goals,start_x + length_x_grid
 
     def gap(terrain,
-            length_x=18.0,
-            length_y=4.0,
-            num_goals=8,
-            start_x = 0,
-            start_y = 0,
-            platform_size=1.0,
-            difficulty = 0.5,
-            gap_height = 2.,
-            gap_low_range = [0.15,0.3],
+            length_x=18.0,        # 地形总长度(米)，可调整：控制整个地形区域的X方向长度
+            length_y=4.0,         # 地形总宽度(米)，可调整：控制整个地形区域的Y方向宽度
+            num_goals=8,          # 目标点数量，可调整：控制需要经过的关卡数量
+            start_x = 0,          # 起始X坐标(网格单位)，可调整：控制地形在全局中的起始位置
+            start_y = 0,          # 起始Y坐标(网格单位)，可调整：控制地形在全局中的起始位置
+            platform_size=1.0,    # 起始平台大小(米)，可调整：控制第一个平台的大小，影响起跳区域
+            difficulty = 0.5,     # 难度系数(0-1)，可调整：0=最简单(gap最窄)，1=最难(gap最宽)
+            gap_height = 2.,      # 间隙深度(米)，可调整：控制间隙的垂直深度，影响跳跃失败的惩罚
+            gap_low_range = [0.15,0.3],  # 间隙宽度范围[最小,最大](米)，可调整：控制间隙宽度的变化范围
             ):
+        """
+        生成带有间隙(gap)的地形，机器人需要跳过这些间隙
         
+        可调整的关键参数：
+        1. difficulty: 调整间隙的宽度难度
+        2. gap_height: 调整间隙的深度
+        3. gap_low_range: 调整间隙宽度的最小和最大值范围
+        4. num_goals: 调整需要跳过的间隙数量
+        5. platform_size: 调整起始平台的大小
+        6. length_x/length_y: 调整整体地形的尺寸
+        """
+        
+        # 初始化目标点数组
         goals = np.zeros((num_goals, 2))
+        
+        # 计算Y方向的中心位置（网格单位）
         mid_y = round(length_y/ terrain.horizontal_scale) //2
+        
+        # 计算每个目标点之间的X方向间距（网格单位）
         mid_x =  round((length_x - platform_size)/ terrain.horizontal_scale) // num_goals
+        
+        # 将平台大小转换为网格单
         platform_size = round(platform_size/ terrain.horizontal_scale)
-
+        # 设置所有目标点的位置
         for i in range(num_goals):
             goals[i]=[start_x+platform_size+mid_x*i,start_y+mid_y]
 
+        # 根据难度系数计算间隙宽度（网格单位）
+        # difficulty越大，gap_size越接近gap_low_range[1]（最大值），难度越高
         gap_size = round(( (gap_low_range[0]-gap_low_range[1])*difficulty + gap_low_range[1] )/terrain.horizontal_scale)
+        
+        # 计算第一个间隙的起始位置
         gap_dis_x = start_x + platform_size + gap_size
         gap_dis_y = start_y + mid_y
         
+        # 创建多个间隙
         for i in range(num_goals):
+            # 将间隙区域的高度设置为负值（形成凹陷）
             terrain.height_field_raw[gap_dis_x :gap_dis_x + gap_size, gap_dis_y - mid_y:gap_dis_y + mid_y] = -round(gap_height / terrain.vertical_scale)
+            # 移动到下一个间隙位置（间隔为3倍gap_size）
             gap_dis_x += 3*gap_size
         
+        # 设置起始平台为平地（高度为0）
         terrain.height_field_raw[start_x :start_x + platform_size, start_y :start_y + mid_y*2] = 0
 
         return terrain, goals,start_x+mid_x*num_goals
     
-    def plot(
-            terrain,
+    def plot(terrain,
             length_x=18.,
             length_y=4.,
             num_goals=8,
@@ -411,3 +436,204 @@ class single_terrain:
             dis_x += flat_size + hurdle_size * 2
 
         return terrain,goals,dis_x
+    
+    def flat_gap(terrain,
+                 length_x=18.0,       # 地形总长度(米) - X方向
+                 length_y=8.0,        # 地形总宽度(米) - Y方向
+                 num_goals=8,         # 目标点数量
+                 start_x=0,           # 起始X坐标(网格单位)
+                 start_y=0,           # 起始Y坐标(网格单位)
+                 platform_size=1.0,   # 起始平台大小(米)
+                 difficulty=0.5,      # 难度系数(0-1)
+                 gap_depth=1.0,       # 间隙深度(米)
+                 middle_gap_width=1.0,  # 中间间隔宽度(米) - 左右区域之间的缓冲区
+                 ):
+        
+        # 初始化目标点数组
+        goals = np.zeros((num_goals, 2))
+        
+        # 计算基本参数
+        length_x_grid = round(length_x / terrain.horizontal_scale)
+        length_y_grid = round(length_y / terrain.horizontal_scale)
+        # 起始平台长度（平地），左右两侧使用相同的平台
+        init_platform_grid = round(platform_size / terrain.horizontal_scale)
+        middle_gap_grid = round(middle_gap_width / terrain.horizontal_scale)  # 中间间隔
+        
+        # Y方向分成三个区域：左边 + 中间间隔 + 右边
+        # 可用宽度 = 总宽度 - 中间间隔
+        usable_width = length_y_grid - middle_gap_grid
+        left_width = usable_width // 2  # 左边区域宽度
+        right_width = usable_width - left_width  # 右边区域宽度（可能略有不同）
+        
+        # === 左边区域：平地（机器人行走区域） ===
+        left_y_start = start_y
+        left_y_end = start_y + left_width
+        
+        # 整个左边区域设置为平地（高度为0）
+        terrain.height_field_raw[start_x:start_x + length_x_grid, 
+                                left_y_start:left_y_end] = 0
+        
+        # 设置起始平台（左边区域的起点，保持为平地以强调"起步区"）
+        terrain.height_field_raw[start_x:start_x + init_platform_grid, 
+                                left_y_start:left_y_end] = 0
+        
+        # 计算目标点位置（都在左边区域的中心线上）
+        left_mid_y = start_y + left_width // 2  # 左边区域的中心Y坐标
+        per_x = (length_x_grid - init_platform_grid) // num_goals
+        for i in range(num_goals):
+            goals[i] = [start_x + init_platform_grid + per_x * i, left_mid_y]
+            
+        # 保存左边区域的中心Y坐标（用于环境原点定位）
+        terrain.left_region_center_y = left_mid_y * terrain.horizontal_scale  # 转换为米
+
+        # === 中间区域：平地间隔（缓冲区） ===
+        middle_y_start = start_y + left_width
+        middle_y_end = middle_y_start + middle_gap_grid
+        
+        # 中间区域也设置为平地
+        terrain.height_field_raw[start_x:start_x + length_x_grid,
+                                middle_y_start:middle_y_end] = 0
+        
+        # === 右边区域：BeamDojo标准GAP地形 ===
+        gap_y_start = middle_y_end
+        gap_y_end = start_y + length_y_grid
+        
+        # 先在右侧放置一个起始平地平台，然后再开始BeamDojo标准GAP地形
+        terrain.height_field_raw[start_x:start_x + init_platform_grid,
+                                gap_y_start:gap_y_end] = 0
+        
+        # 平台尺寸数组（按难度等级0-8对应）
+        platform_sizes = [0.7, 0.65, 0.5, 0.4, 0.35, 0.3, 0.25, 0.2, 0.2]
+        # 转换为网格单位
+        gap_depth_grid = round(gap_depth / terrain.vertical_scale)
+        
+        # 根据难度等级计算当前平台尺寸和间距
+        difficulty_level = min(8, int(difficulty * 8))  # 0-8级
+        current_platform_size = platform_sizes[difficulty_level]  # 当前难度对应的平台尺寸
+        max_gap_distance = 0.1 + 0.05 * difficulty_level  # 最大平台间距
+        
+        beam_platform_size_grid = round(current_platform_size / terrain.horizontal_scale)
+        gap_distance_grid = round(max_gap_distance / terrain.horizontal_scale)
+        
+        # 在右边区域创建BeamDojo标准GAP地形
+        # 从右侧起始平地平台之后开始生成
+        current_x = start_x + init_platform_grid
+        
+        while current_x + beam_platform_size_grid < start_x + length_x_grid:
+            # 创建平台
+            terrain.height_field_raw[current_x:current_x + beam_platform_size_grid, 
+                                    gap_y_start:gap_y_end] = 0
+            # 移动到下一个平台位置
+            current_x += beam_platform_size_grid
+            # 如果还有空间，创建间隙
+            if current_x < start_x + length_x_grid:
+                gap_size = min(gap_distance_grid, start_x + length_x_grid - current_x)
+                terrain.height_field_raw[current_x:current_x + gap_size, 
+                                        gap_y_start:gap_y_end] = -gap_depth_grid
+                current_x += gap_size
+                
+        return terrain, goals, start_x + length_x_grid
+
+    def flat_Stones_Everywhere(terrain,
+                    length_x=18.0,       # 地形总长度(米) - X方向
+                    length_y=8.0,        # 地形总宽度(米) - Y方向
+                    num_goals=8,         # 目标点数量
+                    start_x=0,           # 起始X坐标(网格单位)
+                    start_y=0,           # 起始Y坐标(网格单位)
+                    platform_size=1.0,   # 起始平台大小(米)
+                    difficulty=0.5,      # 难度系数(0-1)
+                    gap_depth=1.0,       # 间隙深度(米)
+                    middle_gap_width=1.0,  # 中间间隔宽度(米) - 左右区域之间的缓冲区
+                    ):
+        """
+        组合地形：左边平地起点 + 右边Stones Everywhere
+        
+        布局类似flat_gap：
+        - 左边：平地（机器人行走），从起点开始
+        - 右边：Stones Everywhere地形（机器人观测）
+        
+        训练目标：机器人在左边平地行走，观测右边石头地形
+        """
+        
+        # 初始化目标点数组
+        goals = np.zeros((num_goals, 2))
+        
+        # 计算基本参数
+        length_x_grid = round(length_x / terrain.horizontal_scale)
+        length_y_grid = round(length_y / terrain.horizontal_scale)
+        init_platform_grid = round(platform_size / terrain.horizontal_scale)  # 起始平台
+        middle_gap_grid = round(middle_gap_width / terrain.horizontal_scale)
+        
+        # Y方向分成三个区域：左边平地 + 中间间隔 + 右边Stones
+        usable_width = length_y_grid - middle_gap_grid
+        left_width = usable_width // 2
+        
+        # === 左边区域：平地（机器人实际行走区域） ===
+        left_y_start = start_y
+        left_y_end = start_y + left_width
+        
+        # 整个左边区域设为平地（高度=0）
+        terrain.height_field_raw[start_x:start_x + length_x_grid, 
+                                left_y_start:left_y_end] = 0
+        
+        # 设置起始平台（左边区域的起点）
+        terrain.height_field_raw[start_x:start_x + init_platform_grid, 
+                                left_y_start:left_y_end] = 0
+        
+        # 计算目标点位置（都在左边区域的中心线上，从起始平台后开始）
+        left_mid_y = start_y + left_width // 2  # 左边区域的中心Y坐标
+        per_x = (length_x_grid - init_platform_grid) // num_goals
+        for i in range(num_goals):
+            goals[i] = [start_x + init_platform_grid + per_x * i, left_mid_y]
+            
+        # 保存左边区域的中心Y坐标（用于环境原点定位）
+        terrain.left_region_center_y = left_mid_y * terrain.horizontal_scale
+
+        # === 中间区域：平地间隔（缓冲区） ===
+        middle_y_start = start_y + left_width
+        middle_y_end = middle_y_start + middle_gap_grid
+        terrain.height_field_raw[start_x:start_x + length_x_grid,
+                                middle_y_start:middle_y_end] = 0
+        
+        # === 右边区域：Stones Everywhere 地形（机器人观测区） ===
+        stones_y_start = middle_y_end
+        stones_y_end = start_y + length_y_grid
+        
+        # 先将整个右边区域设为深坑（背景）
+        gap_depth_grid = round(gap_depth / terrain.vertical_scale)
+        terrain.height_field_raw[start_x:start_x + length_x_grid,
+                                stones_y_start:stones_y_end] = -gap_depth_grid
+        
+        # === Stones Everywhere 参数（来自论文BeamDojo） ===
+        difficulty_level = min(8, int(difficulty * 8))  # 难度等级 l ∈ [0, 8]
+        
+        # 石块尺寸：max{0.25, 1.5(1 - 0.1l)}
+        stone_size = max(0.25, 1.5 * (1.0 - 0.1 * difficulty_level))
+        stone_size_grid = round(stone_size / terrain.horizontal_scale)
+        
+        # 石块间距：0.05 × ⌈l/2⌉
+        stone_distance = 0.05 * np.ceil(difficulty_level / 2.0)
+        stone_distance_grid = round(stone_distance / terrain.horizontal_scale)
+        
+        # 子网格尺寸 = 石块尺寸 + 间距
+        subgrid_size = stone_size_grid + stone_distance_grid
+        
+        # 在右边区域放置石块"岛屿"（尽可能密集填充整个右边区域）
+        current_x = start_x
+        # 放宽条件：只要石块起点在范围内就放置（允许部分越界）
+        while current_x < start_x + length_x_grid:
+            current_y = stones_y_start
+            while current_y < stones_y_end:
+                # 计算实际可以放置的石块尺寸（避免越界）
+                actual_stone_x = min(stone_size_grid, start_x + length_x_grid - current_x)
+                actual_stone_y = min(stone_size_grid, stones_y_end - current_y)
+                
+                # 只有当石块足够大时才创建（至少要有原尺寸的30%）
+                if actual_stone_x >= stone_size_grid * 0.3 and actual_stone_y >= stone_size_grid * 0.3:
+                    # 创建石块平台（高度=0）
+                    terrain.height_field_raw[current_x:current_x + actual_stone_x,
+                                            current_y:current_y + actual_stone_y] = 0
+                current_y += subgrid_size
+            current_x += subgrid_size
+        
+        return terrain, goals, start_x + length_x_grid

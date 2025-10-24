@@ -114,7 +114,7 @@ class Terrain:
         
         selected_pair = random.choices(pairs, weights=normalized_weights, k=1)[0]
         terrain_type, index = selected_pair  
-        difficulty = np.random.uniform(0.7, 1)
+        # difficulty = np.random.uniform(0.7, 1)
         if terrain_type == "single":
             terrain = generator.single_create(terrain,index,difficulty)
         elif terrain_type == "multiplication":
@@ -126,28 +126,61 @@ class Terrain:
         return terrain
 
     def add_terrain_to_map(self, terrain, row, col):
+        """
+        将单个地形块添加到总地图中
+        
+        参数：
+            terrain: 单个地形对象(包含height_field_raw、goals等)
+            row: 地形块的行号(对应难度级别,0=最简单,8=最难)
+            col: 地形块的列号(对应地形类型)
+        """
         i = row
         j = col
-        # map coordinate system
-        start_x = self.border + i * self.length_per_env_pixels
-        end_x = self.border + (i + 1) * self.length_per_env_pixels
-        start_y = self.border + j * self.width_per_env_pixels
-        end_y = self.border + (j + 1) * self.width_per_env_pixels
+        
+        # === 步骤1：计算地形块在总地图中的位置 ===
+        # 总地图坐标系(包含边界)
+        start_x = self.border + i * self.length_per_env_pixels  # 地形块起始X位置(网格单位)
+        end_x = self.border + (i + 1) * self.length_per_env_pixels  # 地形块结束X位置
+        start_y = self.border + j * self.width_per_env_pixels  # 地形块起始Y位置(网格单位)
+        end_y = self.border + (j + 1) * self.width_per_env_pixels  # 地形块结束Y位置
+        
+        # 将单个地形块的高度图复制到总地图的对应位置
         self.height_field_raw[start_x: end_x, start_y:end_y] = terrain.height_field_raw
 
-        env_origin_x = i * self.env_length + 1.0
-        env_origin_y = (j + 0.5) * self.env_width
-        x1 = int((self.env_length/2. - 0.5) / terrain.horizontal_scale) # within 1 meter square range
+        # === 步骤2：计算环境原点(机器人生成位置) ===
+        if hasattr(terrain, 'left_region_center_x'):
+            env_origin_x = i * self.env_width + terrain.left_region_center_x
+        else:
+            env_origin_x = i * self.env_length + 0.5
+
+        if hasattr(terrain, 'left_region_center_y'):
+            env_origin_y = j * self.env_width + terrain.left_region_center_y
+        else:
+            env_origin_y = (j + 0.5) * self.env_width
+        
+        # === 步骤3：采样环境原点处的高度(用于确定Z坐标) ===
+        x1 = int((self.env_length/2. - 0.5) / terrain.horizontal_scale)
         x2 = int((self.env_length/2. + 0.5) / terrain.horizontal_scale)
         y1 = int((self.env_width/2. - 0.5) / terrain.horizontal_scale)
         y2 = int((self.env_width/2. + 0.5) / terrain.horizontal_scale)
+        
+        # Z坐标(高度)
         if self.cfg.origin_zero_z:
+            # 配置为True：机器人生成在Z=0(地面)
             env_origin_z = 0
         else:
-            env_origin_z = np.max(terrain.height_field_raw[x1:x2, y1:y2])*terrain.vertical_scale
+            # 配置为False：机器人生成在采样区域的最高点
+            env_origin_z = np.max(terrain.height_field_raw[x1:x2, y1:y2]) * terrain.vertical_scale
+        
+        # 保存环境原点坐标(世界坐标系)
         self.env_origins[i, j] = [env_origin_x, env_origin_y, env_origin_z]
+        
+        # === 步骤4：保存地形类型 ===
         self.terrain_type[i, j] = terrain.idx
 
+        # === 步骤5：转换目标点坐标到世界坐标系 ===
+        # terrain.goals 是相对于地形块的本地坐标(网格单位)
+        # 需要转换为世界坐标：加上地形块在世界中的偏移
         self.goals[i, j, :, :2] = terrain.goals + [i * self.env_length, j * self.env_width]
 
 def convert_heightfield_to_trimesh(height_field_raw, horizontal_scale, vertical_scale, slope_threshold=None):
