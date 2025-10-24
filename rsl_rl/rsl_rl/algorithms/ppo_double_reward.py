@@ -207,6 +207,8 @@ class PPODoubleReward:
         mean_surrogate_loss = 0
         mean_estimator_loss = 0
         mean_priv_reg_loss = 0
+        mean_discriminator_loss = 0
+        mean_discriminator_acc = 0
         # 根据是否使用双Critic选择合适的generator
         if self.use_double_critic and hasattr(self.storage, 'mini_batch_generator_double'):
             generator = self.storage.mini_batch_generator_double(self.num_mini_batches, self.num_learning_epochs)
