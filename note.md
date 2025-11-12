@@ -169,3 +169,5 @@ multi_teacher_distillation_runner.py:
             actor_obs = obs.get("policy", list(obs.values())[0])
             critic_obs = obs.get("critic", obs.get("privileged", list(obs.values())[-1]))
             obs是字典？何意味
+
+python train_distill.py --task=h1_2_fix_distill --proj_name=h1_distillation --exptid=multi_teacher_test
