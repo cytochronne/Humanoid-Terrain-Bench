@@ -30,30 +30,30 @@
 
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-class GR1FixCfg( LeggedRobotCfg ):
+class G1FixCfg( LeggedRobotCfg ):
     class init_state( LeggedRobotCfg.init_state ):
-        pos = [0.0, 0.0, 0.90]  # x,y,z [m]
+        pos = [0.0, 0.0, 0.80]  # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
-            "left_hip_roll_joint": 0.,
-            "left_hip_yaw_joint": 0.,
-            "left_hip_pitch_joint": 0.,
-            "left_knee_pitch_joint": 0.,
-            "left_ankle_pitch_joint": 0.,
-            "left_ankle_roll_joint": 0.,
-            "right_hip_roll_joint": 0.,
-            "right_hip_yaw_joint": 0.,
-            "right_hip_pitch_joint": 0.,
-            "right_knee_pitch_joint": 0.,
-            "right_ankle_pitch_joint": 0.,
-            "right_ankle_roll_joint": 0.,
-            'torso_joint' : 0.
+           'left_hip_yaw_joint' : 0. ,
+           'left_hip_roll_joint' : 0,
+           'left_hip_pitch_joint' : -0.1,
+           'left_knee_joint' : 0.3,
+           'left_ankle_pitch_joint' : -0.2,
+           'left_ankle_roll_joint' : 0,
+           'right_hip_yaw_joint' : 0.,
+           'right_hip_roll_joint' : 0,
+           'right_hip_pitch_joint' : -0.1,
+           'right_knee_joint' : 0.3,
+           'right_ankle_pitch_joint': -0.2,
+           'right_ankle_roll_joint' : 0,
+           'torso_joint' : 0.
         }
 
     class env( LeggedRobotCfg.env ):
         num_envs = 2048
         n_scan = 132
         n_priv = 3 + 3 + 3 # = 9 base velocity 3个
-
+        # n_priv_latent = 4 + 1 + 12 +12
         n_priv_latent = 4 + 1 + 12 + 12 # mass, fraction, motor strength1 and 2
         
         n_proprio = 51 # 所有本体感知信息，即obs_buf
@@ -65,7 +65,7 @@ class GR1FixCfg( LeggedRobotCfg ):
         env_spacing = 3.  # not used with heightfields/trimeshes 
 
         contact_buf_len = 100
-     
+        
     class control( LeggedRobotCfg.control ):
         # PD Drive parameters:
         control_type = 'P'
@@ -88,12 +88,12 @@ class GR1FixCfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/GR1/GR1T2_fourier_hand_6dof.urdf'
-        name = "GR1"
-        foot_name = "foot_roll"
-        knee_name = "shank"
-        penalize_contacts_on = ["thigh", "shank"]
-        terminate_after_contacts_on = ["base"]
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_12dof_with_hand.urdf'
+        name = "g1_fix_upper"
+        foot_name = "ankle_roll"
+        knee_name = "knee"
+        penalize_contacts_on = ["hip", "knee"]
+        terminate_after_contacts_on = ["pelvis"]
         self_collisions = 0 # 1 to disable, 0 to enable...bitwise filter
         flip_visual_attachments = False
 
@@ -104,6 +104,7 @@ class GR1FixCfg( LeggedRobotCfg ):
             ang_vel_yaw = [0, 0]    # min max [rad/s]
             heading = [0, 0]
 
+  
     class rewards:
         class scales:
             termination = -0.0
@@ -131,12 +132,12 @@ class GR1FixCfg( LeggedRobotCfg ):
         max_contact_force = 100. # forces above this value are penalized
         is_play = False
 
-class GR1FixCfgPPO( LeggedRobotCfgPPO ):
+class G1FixCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'gr1_fix'
+        experiment_name = 'g1_fix'
         max_iterations = 50001 # number of policy updates
         save_interval = 500
 
@@ -144,7 +145,7 @@ class GR1FixCfgPPO( LeggedRobotCfgPPO ):
         train_with_estimated_states = True
         learning_rate = 1.e-4
         hidden_dims = [128, 64]
-        priv_states_dim = GR1FixCfg.env.n_priv
-        num_prop = GR1FixCfg.env.n_proprio
-        num_scan = GR1FixCfg.env.n_scan
+        priv_states_dim = G1FixCfg.env.n_priv
+        num_prop = G1FixCfg.env.n_proprio
+        num_scan = G1FixCfg.env.n_scan
 

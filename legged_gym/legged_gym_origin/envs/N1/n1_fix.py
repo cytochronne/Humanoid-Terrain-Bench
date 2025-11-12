@@ -30,7 +30,7 @@
 
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-class GR1FixCfg( LeggedRobotCfg ):
+class N1FixCfg( LeggedRobotCfg ):
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.90]  # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
@@ -65,7 +65,8 @@ class GR1FixCfg( LeggedRobotCfg ):
         env_spacing = 3.  # not used with heightfields/trimeshes 
 
         contact_buf_len = 100
-     
+
+        
     class control( LeggedRobotCfg.control ):
         # PD Drive parameters:
         control_type = 'P'
@@ -88,8 +89,8 @@ class GR1FixCfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/GR1/GR1T2_fourier_hand_6dof.urdf'
-        name = "GR1"
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/N1/N1_rotor.urdf'
+        name = "N1"
         foot_name = "foot_roll"
         knee_name = "shank"
         penalize_contacts_on = ["thigh", "shank"]
@@ -131,12 +132,12 @@ class GR1FixCfg( LeggedRobotCfg ):
         max_contact_force = 100. # forces above this value are penalized
         is_play = False
 
-class GR1FixCfgPPO( LeggedRobotCfgPPO ):
+class N1FixCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'gr1_fix'
+        experiment_name = 'n1_fix'
         max_iterations = 50001 # number of policy updates
         save_interval = 500
 
@@ -144,7 +145,7 @@ class GR1FixCfgPPO( LeggedRobotCfgPPO ):
         train_with_estimated_states = True
         learning_rate = 1.e-4
         hidden_dims = [128, 64]
-        priv_states_dim = GR1FixCfg.env.n_priv
-        num_prop = GR1FixCfg.env.n_proprio
-        num_scan = GR1FixCfg.env.n_scan
+        priv_states_dim = N1FixCfg.env.n_priv
+        num_prop = N1FixCfg.env.n_proprio
+        num_scan = N1FixCfg.env.n_scan
 

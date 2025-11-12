@@ -357,10 +357,10 @@ class HumanoidRobot(BaseTask):
         """ Check if environments need to be reset
         """
         self.reset_buf = torch.zeros((self.num_envs, ), dtype=torch.bool, device=self.device)
-        roll_cutoff = torch.abs(self.roll) > 1.5
-        pitch_cutoff = torch.abs(self.pitch) > 1.5
+        roll_cutoff = torch.abs(self.roll) > 1
+        pitch_cutoff = torch.abs(self.pitch) > 0.35
         reach_goal_cutoff = self.cur_goal_idx >= self.cfg.terrain.num_goals
-        height_cutoff = self.root_states[:, 2] < 0.5
+        height_cutoff = self.root_states[:, 2] < 0.3
 
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         self.time_out_buf |= reach_goal_cutoff
@@ -1741,8 +1741,114 @@ class HumanoidRobot(BaseTask):
         
         # 惩罚过大的力矩（不稳定的接触模式）
         return torch.clamp(total_moment - 10.0, min=0.0)
+    
+    # def _reward_forward_progress(self):
+
+    
+    #     # Encourage moving forward along the robot's local +X (body frame).
+    #     # base_lin_vel is already expressed in body frame.
+    #     forward_speed = self.base_lin_vel[:, 0]
+    #     return torch.clamp(forward_speed, min=0.0)  # or: torch.tanh(torch.clamp(forward_speed, min=0.0))
+
+    def _reward_foot_clearance(self): #h1有
+        """
+        Reward based on the height difference between the two feet.
+        For each environment: compute absolute height difference between the first two feet.
+        Then sample the ground height under the lower of the two feet. If that ground height
+        is lower, we reward larger foot-height-differences more (scaled by a configurable
+        ground scale). The function is resilient to missing feet indices.
+
+        Returns:
+            torch.Tensor: shape (num_envs,) reward per environment
+        """
+        # require at least two feet
+        if not hasattr(self, 'feet_indices') or self.feet_indices.shape[0] < 2:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        # feet world positions: shape [num_envs, n_feet, 3]
+        feet_pos = self.rigid_body_states[:, self.feet_indices, :3]
+        # feet z (world): shape [num_envs, n_feet]
+        foot_z = feet_pos[:, :, 2]
+
+        # compute absolute difference between the first two feet
+        # shape: [num_envs]
+        try:
+            height_diff = torch.abs(foot_z[:, 1] - foot_z[:, 0])
+        except Exception:
+            # fallback: if indexing fails, return zeros
+            return torch.zeros(self.num_envs, device=self.device)
+        # print("height_diff=", height_diff)
+
+        # identify index (0 or 1) of the lower foot per environment
+        lower_is_second = (foot_z[:, 1] < foot_z[:, 0])
+
+        # prepare points for sampling ground height under the lower foot
+        pts = torch.where(lower_is_second.unsqueeze(1), feet_pos[:, 1, :2], feet_pos[:, 0, :2])
+        points = pts.clone()
+        points += self.terrain.cfg.border_size
+        points = (points / self.terrain.cfg.horizontal_scale).long()
+
+        px = points[:, 0].view(-1)
+        py = points[:, 1].view(-1)
+        px = torch.clip(px, 0, self.height_samples.shape[0]-2)
+        py = torch.clip(py, 0, self.height_samples.shape[1]-2)
+
+        heights1 = self.height_samples[px, py]
+        heights2 = self.height_samples[px+1, py]
+        heights3 = self.height_samples[px, py+1]
+        ground_h = torch.min(heights1, heights2)
+        ground_h = torch.min(ground_h, heights3)
+        # shape back to [num_envs]
+        ground_h = ground_h.view(self.num_envs) * self.terrain.cfg.vertical_scale
+
+        # lower ground -> more reward scaling. Use a configurable scale factor.
+        ground_scale = getattr(self.cfg.rewards, 'foot_clearance_ground_scale', 1.0)
+        # Normalize ground_h relative to some reference (e.g., terrain vertical_scale is already applied).
+        # We'll map lower ground to larger multiplier: multiplier = 1.0 + ground_scale * (-ground_h)
+        # but clamp to non-negative multipliers
+        multiplier = 1.0 + ground_scale * (-ground_h)
+        # print("multiplier=", multiplier)
+        # only reward clearance above target
+        target = getattr(self.cfg.rewards, 'foot_clearance_target', 0.15)
+        base_reward = torch.clamp(height_diff - target, min=0.0)
+
+        # final reward: base_reward scaled by ground multiplier and masked
+        rew = base_reward * multiplier
+        # print("foot_clearance reward=", rew)
+
+        return rew
+
+    def _reward_stride_length(self):
+        """
+        奖励大步幅走路 - 鼓励机器人迈更大的步子
+        """
+        # 获取双脚的三维位置
+        foot_pos = self.rigid_body_states[:, self.feet_indices, :3]
+        
+        # 计算双脚在X方向（前进方向）的距离
+        foot_dist_x = torch.abs(foot_pos[:, 0, 0] - foot_pos[:, 1, 0])
+        
+        # 计算双脚在Y方向（侧向）的距离
+        foot_dist_y = torch.abs(foot_pos[:, 0, 1] - foot_pos[:, 1, 1])
+        
+        # 计算总步幅（欧几里得距离）
+        stride_length = torch.sqrt(foot_dist_x**2 + foot_dist_y**2)
+        
+        # 目标步幅（鼓励大步幅）
+        target_stride = 0.25  # 30cm的目标步幅
+        
+        # 计算步幅奖励：步幅越大奖励越高
+        stride_reward = torch.clamp(stride_length / target_stride, 0.0, 2.0)
+        
+        # 只在机器人移动时给予奖励
+        moving_mask = torch.norm(self.commands[:, :2], dim=1) > 0.1
+        stride_reward *= moving_mask.float()
+        
+        return stride_reward
 
     def quat_to_rot_mat(self, quat):
+
+
         """将四元数转换为旋转矩阵"""
         qw, qx, qy, qz = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
         

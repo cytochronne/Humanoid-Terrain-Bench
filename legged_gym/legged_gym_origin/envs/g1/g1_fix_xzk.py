@@ -208,16 +208,22 @@ class G1FixCfg( LeggedRobotCfg ):
         # PD Drive parameters:
         control_type = 'P'
         # PD Drive parameters:
+        # stiffness = {'hip_yaw': 100,
+        #              'hip_roll': 100,
+        #              'hip_pitch': 100,
+        #              'knee': 150,
+        #              'ankle': 40,
+        #              }  # [N*m/rad]
         stiffness = {'hip_yaw': 100,
                      'hip_roll': 100,
                      'hip_pitch': 100,
-                     'knee': 150,
-                     'ankle': 40,
+                     'knee': 220,
+                     'ankle': 60,
                      }  # [N*m/rad]
         damping = {  'hip_yaw': 2,
                      'hip_roll': 2,
                      'hip_pitch': 2,
-                     'knee': 4,
+                     'knee': 6,
                      'ankle': 2,
                      }  # [N*m/rad]  # [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
@@ -300,8 +306,9 @@ class G1FixCfg( LeggedRobotCfg ):
 
     class rewards:
         class scales:
+            stride_length = 0.9
             # termination = -0.0
-            tracking_lin_vel = 2.0
+            tracking_lin_vel = 2.5
             tracking_ang_vel = 1.0
             # base_height = -10.0
             orientation = -1.25
@@ -331,9 +338,10 @@ class G1FixCfg( LeggedRobotCfg ):
             reach_goal = 2.0
             heading_tracking = 0.5
             next_heading_tracking = 0.3
-            
+            #forward_progress = 1.0
+            foot_clearance = 2.5
 
-        only_positive_rewards = False # if true negative total rewards are clipped at zero (avoids early termination problems)
+        only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
         soft_dof_pos_limit = 1. # percentage of urdf limits, values above this limit are penalized
         soft_dof_vel_limit = 1.
@@ -345,13 +353,15 @@ class G1FixCfg( LeggedRobotCfg ):
         base_height_target = 0.7
         max_contact_force = 100. # forces above this value are penalized
         is_play = False
+        foot_clearance_target = 0
 
 class G1FixCfgPPO( LeggedRobotCfgPPO ):
+
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         value_loss_coef = 1.0
         use_clipped_value_loss = True
         clip_param = 0.2
-        entropy_coef = 0.01
+        entropy_coef = 0.03
         num_learning_epochs = 5
         num_mini_batches = 4 # mini batch size = num_envs*nsteps / nminibatches
         learning_rate = 1.e-3 #5.e-4

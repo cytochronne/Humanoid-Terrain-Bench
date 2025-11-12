@@ -311,7 +311,7 @@ class single_terrain:
             platform_size=1.0, 
             difficulty = 0.5,
             angle_range = [4.1,10.0],
-            uphill=False
+            uphill=True
             ):    
 
         goals = np.zeros((num_goals, 2))

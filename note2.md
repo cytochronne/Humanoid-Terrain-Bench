@@ -51,3 +51,24 @@ def process_actions(self, raw_actions):
         clip_actions = self.clip_actions / self.action_scale
         processed_actions = torch.clip(raw_actions, -clip_actions, clip_actions).to(self.device)
         return processed_actions
+
+
+# 地形：
+for item in combine_config.proportions:
+            terrain_type, index, weight = item
+            id = index
+   terrain.idx = id 
+   self.terrain_type[i, j] = terrain.idx: self = Terrain
+
+   obs_buf.shape() = [num_envs，D]
+
+   已知：每一格子（行，列）对应的地形id，对应于proportion中的id
+   obs和地形id可在rollout过程中通过step()被采样
+   问题：怎么先把obs和地形id对应起来，obs_buf.shape() = [num_envs，D]，需要知道行和列是怎么并为num_envs的，需要将Terrain.terrain_type[i, j]这个两维张量reshape成num_envs的一个一维张量，把这个信息添加到extras中
+——>
+    把extras中的地形id信息存到buffer中
+——>
+   从buffer里取出一个batch的obs和对应的地形id
+——>
+   _extract_terrain_ids()填充最终蒸馏所需的terrain_ids
+   最终希望：对一个batch中的每一个obs，找到相应的地形id
