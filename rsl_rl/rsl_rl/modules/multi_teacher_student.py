@@ -37,6 +37,8 @@ class MultiTeacherStudent(nn.Module):
         num_actions: int,
         num_teachers: int = 6,
         teacher_model_paths: Optional[List[str]] = None,
+        teacher_ids: Optional[List[int]] = None,
+        teacher_id_map: Optional[Dict[int, str]] = None,
         scan_encoder_dims: List[int] = [256, 256, 256],
         actor_hidden_dims: List[int] = [256, 256, 256], 
         critic_hidden_dims: List[int] = [256, 256, 256],
@@ -59,7 +61,9 @@ class MultiTeacherStudent(nn.Module):
             num_hist: 历史观测长度
             num_actions: 动作维度
             num_teachers: 教师数量
-            teacher_model_paths: 教师模型路径列表
+            teacher_model_paths: 教师模型路径列表（按顺序）
+            teacher_ids: 教师ID列表（用于显式指定地形ID到教师索引的映射）
+            teacher_id_map: 教师ID到checkpoint路径的映射字典
             其他参数: 网络结构配置参数
         """
         super().__init__()
@@ -75,8 +79,48 @@ class MultiTeacherStudent(nn.Module):
         self.num_priv_explicit = num_priv_explicit
         self.num_hist = num_hist
         self.num_actions = num_actions
-        self.num_teachers = num_teachers
-        self.teacher_model_paths = teacher_model_paths or []
+
+        # 解析教师ID与checkpoint映射，优先使用显式字典
+        self.teacher_ids = []
+        self.teacher_model_paths = []
+        self.teacher_id_map = {}
+
+        if teacher_id_map:
+            # 使用配置字典确保teacher_id与路径一一对应
+            if teacher_ids:
+                ordered_ids = list(teacher_ids)
+            else:
+                ordered_ids = list(teacher_id_map.keys())
+            self.teacher_ids = ordered_ids
+            self.teacher_model_paths = [teacher_id_map.get(tid) for tid in self.teacher_ids]
+            self.teacher_id_map = {tid: teacher_id_map.get(tid) for tid in self.teacher_ids}
+        elif teacher_ids:
+            self.teacher_ids = list(teacher_ids)
+            paths_list = list(teacher_model_paths or [])
+            self.teacher_model_paths = paths_list
+            self.teacher_id_map = {
+                tid: paths_list[idx] if idx < len(paths_list) else None
+                for idx, tid in enumerate(self.teacher_ids)
+            }
+        else:
+            self.teacher_ids = list(range(num_teachers))
+            paths_list = list(teacher_model_paths or [])
+            self.teacher_model_paths = paths_list
+            self.teacher_id_map = {
+                tid: paths_list[idx] if idx < len(paths_list) else None
+                for idx, tid in enumerate(self.teacher_ids)
+            }
+
+        self.num_teachers = len(self.teacher_ids)
+        if len(self.teacher_model_paths) < self.num_teachers:
+            missing = self.num_teachers - len(self.teacher_model_paths)
+            self.teacher_model_paths.extend([None] * missing)
+
+        # 确保teacher_id_map覆盖所有教师ID
+        for idx, tid in enumerate(self.teacher_ids):
+            if tid not in self.teacher_id_map:
+                self.teacher_id_map[tid] = self.teacher_model_paths[idx]
+        self.teacher_id_to_index = {tid: idx for idx, tid in enumerate(self.teacher_ids)}
         
         # 激活函数
         activation_fn = get_activation(activation)
@@ -117,58 +161,62 @@ class MultiTeacherStudent(nn.Module):
         self.teacher_actors = nn.ModuleList()
         self.teacher_stds = nn.ParameterList()
         
-        for i in range(num_teachers):
+        for module_idx, teacher_id in enumerate(self.teacher_ids):
             # 关键修复：使用H1_2FixCfg的正确配置
             # 从搜索结果得知：H1_2FixCfg.env.n_priv = 3 + 3 + 3 = 9 (不是29!)
             # H1_2FixCfg.env.n_priv_latent = 4 + 1 + 12 + 12 = 29
-            
-            if self.teacher_model_paths and i < len(self.teacher_model_paths):
+
+            actual_priv_encoder_dims = [64, 20]
+            actual_num_priv_latent = 29
+
+            model_path = None
+            if module_idx < len(self.teacher_model_paths):
+                model_path = self.teacher_model_paths[module_idx]
+            mapped_path = self.teacher_id_map.get(teacher_id)
+            if model_path is None and mapped_path is not None:
+                model_path = mapped_path
+                if module_idx < len(self.teacher_model_paths):
+                    self.teacher_model_paths[module_idx] = mapped_path
+
+            if model_path:
                 try:
-                    model_path = self.teacher_model_paths[i]
                     checkpoint = torch.load(model_path, map_location='cpu')
                     if 'model_state_dict' in checkpoint:
                         state_dict = checkpoint['model_state_dict']
                     else:
                         state_dict = checkpoint
-                    
+
                     # 从检查点读取网络结构以验证
                     if 'actor.actor_backbone.0.weight' in state_dict:
                         backbone_first_weight = state_dict['actor.actor_backbone.0.weight']
-                        backbone_input_dim = backbone_first_weight.shape[1]  # 实际输入维度
-                        print(f"[DEBUG] 教师{i} 检查点backbone输入维度: {backbone_input_dim}")
-                        
-                        # 使用H1的正确配置验证
-                        # backbone_input = num_prop + scan_encoder_output + num_priv_explicit + priv_encoder_output
-                        # = 51 + 32 + 9 + 20 = 112 ✓
+                        backbone_input_dim = backbone_first_weight.shape[1]
+                        print(f"[DEBUG] 教师{teacher_id} 检查点backbone输入维度: {backbone_input_dim}")
+
                         expected_input = 51 + 32 + 9 + 20  # 112
-                        print(f"[DEBUG] 教师{i} 期望输入维度: {expected_input} (51+32+9+20)")
-                        print(f"[DEBUG] 教师{i} 维度匹配: {expected_input == backbone_input_dim}")
-                    
-                    # 分析priv_encoder结构（从检查点推断）
+                        print(f"[DEBUG] 教师{teacher_id} 期望输入维度: {expected_input} (51+32+9+20)")
+                        print(f"[DEBUG] 教师{teacher_id} 维度匹配: {expected_input == backbone_input_dim}")
+
                     if 'actor.priv_encoder.0.weight' in state_dict and 'actor.priv_encoder.2.weight' in state_dict:
                         priv_first_weight = state_dict['actor.priv_encoder.0.weight']
                         priv_last_weight = state_dict['actor.priv_encoder.2.weight']
-                        priv_input_dim = priv_first_weight.shape[1]  # priv_encoder输入
-                        priv_hidden_dim = priv_first_weight.shape[0]  # priv_encoder隐藏层
-                        priv_output_dim = priv_last_weight.shape[0]   # priv_encoder输出
-                        
+                        priv_input_dim = priv_first_weight.shape[1]
+                        priv_hidden_dim = priv_first_weight.shape[0]
+                        priv_output_dim = priv_last_weight.shape[0]
+
                         actual_priv_encoder_dims = [priv_hidden_dim, priv_output_dim]
                         actual_num_priv_latent = priv_input_dim
-                        
-                        print(f"[DEBUG] 教师{i} 检查点priv_encoder: {priv_input_dim}->{priv_hidden_dim}->{priv_output_dim}")
+
+                        print(f"[DEBUG] 教师{teacher_id} 检查点priv_encoder: {priv_input_dim}->{priv_hidden_dim}->{priv_output_dim}")
                     else:
-                        # 使用默认值
                         actual_priv_encoder_dims = [64, 20]
-                        actual_num_priv_latent = 29  # H1配置
-                        
+                        actual_num_priv_latent = 29
+
                 except Exception as e:
-                    print(f"[ERROR] 分析教师{i}网络结构失败: {e}")
+                    print(f"[ERROR] 分析教师{teacher_id}网络结构失败: {e}")
                     actual_priv_encoder_dims = [64, 20]
                     actual_num_priv_latent = 29
             else:
-                # 默认配置
-                actual_priv_encoder_dims = [64, 20]
-                actual_num_priv_latent = 29
+                print(f"[WARN] 教师{teacher_id}未提供checkpoint，使用默认结构参数。")
             
             # 使用H1_2FixCfg的正确配置创建教师网络
             # 关键修复：传递原始activation字符串，让ActorCriticRMA内部处理激活函数转换
@@ -190,7 +238,7 @@ class MultiTeacherStudent(nn.Module):
             )
             self.teacher_actors.append(teacher_actor_critic)
             
-            print(f"[DEBUG] 教师{i} 最终网络配置:")
+            print(f"[DEBUG] 教师{teacher_id} 最终网络配置:")
             print(f"  - num_priv_latent: {actual_num_priv_latent}")
             print(f"  - num_priv_explicit: 9 (H1配置)")
             print(f"  - priv_encoder_dims: {actual_priv_encoder_dims}")
@@ -226,28 +274,34 @@ class MultiTeacherStudent(nn.Module):
 
         # ==================== 加载教师模型 ====================
         self.loaded_teachers = False
-        if teacher_model_paths:
-            self.load_teacher_models(teacher_model_paths)
+        if any(path is not None for path in self.teacher_model_paths):
+            self.load_teacher_models(self.teacher_model_paths)
         
         # 禁用默认参数验证以加速
         Normal.set_default_validate_args = False
     
-    def load_teacher_models(self, model_paths: List[str]):
+    def load_teacher_models(self, model_paths: List[Optional[str]]):
         """加载教师模型权重"""
         if len(model_paths) != self.num_teachers:
             raise ValueError(f"教师模型路径数量({len(model_paths)})与教师数量({self.num_teachers})不匹配")
         
         loaded_count = 0
-        for i, model_path in enumerate(model_paths):
+        for module_idx, model_path in enumerate(model_paths):
+            teacher_id = self.teacher_ids[module_idx]
+
+            if model_path is None:
+                warnings.warn(f"教师{teacher_id}未指定模型路径，保持默认初始化。")
+                continue
+
             if not os.path.exists(model_path):
-                warnings.warn(f"教师模型路径不存在: {model_path}")
+                warnings.warn(f"教师模型路径不存在 (teacher_id={teacher_id}): {model_path}")
                 continue
                 
             try:
                 # 加载模型检查点
-                print(f"[DEBUG] 正在加载教师模型 {i}: {model_path}")
+                print(f"[DEBUG] 正在加载教师模型 ID={teacher_id} (index={module_idx}): {model_path}")
                 checkpoint = torch.load(model_path, map_location='cpu')
-                print(f"[DEBUG] 教师{i}模型键: {list(checkpoint.keys())}")
+                print(f"[DEBUG] 教师{teacher_id}模型键: {list(checkpoint.keys())}")
                 
                 # 提取actor_critic状态字典
                 if 'ac_state_dict' in checkpoint:
@@ -264,18 +318,18 @@ class MultiTeacherStudent(nn.Module):
                 print(f"[DEBUG] 前10个键: {list(ac_state_dict.keys())[:10]}")
                 
                 # 手动加载匹配的参数（避免维度不匹配错误）
-                print(f"[DEBUG] 手动加载教师{i} ActorCritic匹配的参数...")
+                print(f"[DEBUG] 手动加载教师{teacher_id} ActorCritic匹配的参数...")
                 
                 try:
                     # 尝试直接加载
-                    missing_keys, unexpected_keys = self.teacher_actors[i].load_state_dict(
+                    missing_keys, unexpected_keys = self.teacher_actors[module_idx].load_state_dict(
                         ac_state_dict, strict=False
                     )
-                    print(f"[DEBUG] 教师{i} ActorCritic直接加载成功")
+                    print(f"[DEBUG] 教师{teacher_id} ActorCritic直接加载成功")
                 except RuntimeError as e:
                     print(f"[DEBUG] 直接加载失败，使用手动匹配方式: {str(e)[:100]}...")
                     # 手动加载匹配的参数
-                    model_dict = self.teacher_actors[i].state_dict()
+                    model_dict = self.teacher_actors[module_idx].state_dict()
                     matched_dict = {}
                     skipped_params = []
                     
@@ -285,30 +339,30 @@ class MultiTeacherStudent(nn.Module):
                         else:
                             skipped_params.append(k)
                     
-                    missing_keys, unexpected_keys = self.teacher_actors[i].load_state_dict(matched_dict, strict=False)
+                    missing_keys, unexpected_keys = self.teacher_actors[module_idx].load_state_dict(matched_dict, strict=False)
                     print(f"[DEBUG] 手动加载了 {len(matched_dict)} 个匹配参数，跳过了 {len(skipped_params)} 个不匹配参数")
                     if skipped_params:
                         print(f"[DEBUG] 跳过的参数: {skipped_params[:3]}...")  # 只显示前3个
                 
-                print(f"[DEBUG] 教师{i} ActorCritic加载: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                print(f"[DEBUG] 教师{teacher_id} ActorCritic加载: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
                 
                 # 从加载的ActorCritic中获取std参数
-                if hasattr(self.teacher_actors[i], 'std'):
-                    teacher_std_value = self.teacher_actors[i].std.data.clone()
-                    self.teacher_stds[i].data.copy_(teacher_std_value)
-                    print(f"[INFO] 教师{i} std参数: max={teacher_std_value.max().item():.4f}, min={teacher_std_value.min().item():.4f}")
+                if hasattr(self.teacher_actors[module_idx], 'std'):
+                    teacher_std_value = self.teacher_actors[module_idx].std.data.clone()
+                    self.teacher_stds[module_idx].data.copy_(teacher_std_value)
+                    print(f"[INFO] 教师{teacher_id} std参数: max={teacher_std_value.max().item():.4f}, min={teacher_std_value.min().item():.4f}")
                 else:
-                    print(f"[WARNING] 教师{i} ActorCritic没有std属性")
+                    print(f"[WARNING] 教师{teacher_id} ActorCritic没有std属性")
                 
-                print(f"成功加载教师模型 {i}: {model_path}")
+                print(f"成功加载教师模型 {teacher_id}: {model_path}")
                 if missing_keys:
-                    print(f"教师{i}缺少键: {missing_keys}")
+                    print(f"教师{teacher_id}缺少键: {missing_keys}")
                 if unexpected_keys:
-                    print(f"教师{i}多余键: {unexpected_keys}")
+                    print(f"教师{teacher_id}多余键: {unexpected_keys}")
                 
                 # 调试信息：检查教师ActorCritic参数
-                total_params = sum(p.numel() for p in self.teacher_actors[i].parameters())
-                print(f"[DEBUG] 教师{i} ActorCritic参数数量: {total_params}")
+                total_params = sum(p.numel() for p in self.teacher_actors[module_idx].parameters())
+                print(f"[DEBUG] 教师{teacher_id} ActorCritic参数数量: {total_params}")
                 
                 # 测试教师ActorCritic是否能正常前向传播
                 with torch.no_grad():
@@ -319,8 +373,8 @@ class MultiTeacherStudent(nn.Module):
                     test_obs_clipped = torch.clamp(test_obs, -100.0, 100.0)
                     
                     # 使用ActorCritic的act_inference方法（与play.py一致）
-                    test_action = self.teacher_actors[i].act_inference(test_obs_clipped, hist_encoding=True, eval=False)
-                    print(f"[DEBUG] 教师{i}测试动作范围: [{test_action.min().item():.4f}, {test_action.max().item():.4f}]")
+                    test_action = self.teacher_actors[module_idx].act_inference(test_obs_clipped, hist_encoding=True, eval=False)
+                    print(f"[DEBUG] 教师{teacher_id}测试动作范围: [{test_action.min().item():.4f}, {test_action.max().item():.4f}]")
                     
                     # 测试观测数值范围
                     print(f"[DEBUG] 测试观测范围: [{test_obs_clipped.min().item():.4f}, {test_obs_clipped.max().item():.4f}]")
@@ -328,13 +382,13 @@ class MultiTeacherStudent(nn.Module):
                     
                     # 测试零观测
                     zero_obs = torch.zeros(1, 731, device='cpu')
-                    zero_action = self.teacher_actors[i].act_inference(zero_obs, hist_encoding=True, eval=False)
-                    print(f"[DEBUG] 教师{i}零观测动作范围: [{zero_action.min().item():.4f}, {zero_action.max().item():.4f}]")
+                    zero_action = self.teacher_actors[module_idx].act_inference(zero_obs, hist_encoding=True, eval=False)
+                    print(f"[DEBUG] 教师{teacher_id}零观测动作范围: [{zero_action.min().item():.4f}, {zero_action.max().item():.4f}]")
                 
                 loaded_count += 1
                 
             except Exception as e:
-                warnings.warn(f"加载教师模型{i}失败: {model_path}, 错误: {str(e)}")
+                warnings.warn(f"加载教师模型{teacher_id}失败: {model_path}, 错误: {str(e)}")
                 import traceback
                 traceback.print_exc()
         
@@ -447,12 +501,13 @@ class MultiTeacherStudent(nn.Module):
                         print(f"[WARN][TeacherObs] 保存观测失败: {_e}")
             if terrain_ids is not None:
                 # 根据地形ID路由到对应教师
-                terrain_ids = terrain_ids.long()
-                terrain_ids = torch.clamp(terrain_ids, 0, self.num_teachers - 1)
-                
-                for teacher_id in range(self.num_teachers):
-                    mask = (terrain_ids == teacher_id)
+                terrain_ids = terrain_ids.long().view(-1)
+                handled_mask = torch.zeros_like(terrain_ids, dtype=torch.bool)
+
+                for teacher_id, module_idx in self.teacher_id_to_index.items():
+                    mask = terrain_ids == teacher_id
                     if mask.any():
+                        handled_mask |= mask
                         obs_subset = observations[mask]
                         # 可选：打印该教师的子批次观测统计（受限次数）
                         if debug_teacher_obs and self._teacher_obs_debug_count < self.debug_teacher_obs_print_limit:
@@ -460,34 +515,47 @@ class MultiTeacherStudent(nn.Module):
                             sub_max = obs_subset.max().item()
                             sub_mean = obs_subset.mean().item()
                             sub_std = obs_subset.std().item()
-                            print(f"[DEBUG][TeacherObs] teacher={teacher_id} subset shape={tuple(obs_subset.shape)} min={sub_min:.4f} max={sub_max:.4f} mean={sub_mean:.4f} std={sub_std:.4f}")
+                            print(f"[DEBUG][TeacherObs] teacher_id={teacher_id} subset shape={tuple(obs_subset.shape)} min={sub_min:.4f} max={sub_max:.4f} mean={sub_mean:.4f} std={sub_std:.4f}")
                             try:
-                                print(f"[DEBUG][TeacherObs] teacher={teacher_id} subset sample0 first8={obs_subset[0, :8].detach().cpu().numpy()}")
+                                print(f"[DEBUG][TeacherObs] teacher_id={teacher_id} subset sample0 first8={obs_subset[0, :8].detach().cpu().numpy()}")
                             except Exception:
                                 pass
-                            # 可选：也保存该教师子批次（不强制，避免生成太多小文件）
                             if self.dump_teacher_obs and self._teacher_obs_dump_count < self.teacher_obs_dump_limit:
                                 try:
-                                    self._dump_teacher_observations(obs_subset, torch.full((obs_subset.shape[0],), teacher_id, device=obs_subset.device), tag=f"teacher{teacher_id}")
+                                    tids = torch.full((obs_subset.shape[0],), teacher_id, device=obs_subset.device, dtype=torch.long)
+                                    self._dump_teacher_observations(obs_subset, tids, tag=f"teacher{teacher_id}")
                                 except Exception as _e:
-                                    print(f"[WARN][TeacherObs] 保存teacher={teacher_id}子批次失败: {_e}")
-                        
-                        # 关键修复：完全按照play.py的方式调用
-                        # play.py: policy = ppo_runner.get_inference_policy(device=env.device)
-                        # play.py: actions = policy(obs.detach(), hist_encoding=True, scandots_latent=depth_latent)
-                        # 其中policy实际上就是actor_critic.act_inference方法
-                        
-                        # 注意：play.py中没有传递eval参数，默认为False
-                        teacher_action = self.teacher_actors[teacher_id].act_inference(
-                            obs_subset.detach(),  # 与play.py一致，使用detach()
-                            hist_encoding=hist_encoding,  # 传递hist_encoding参数
-                            scandots_latent=None  # 没有深度潜在特征
-                            # 注意：没有eval参数，使用默认值False
+                                    print(f"[WARN][TeacherObs] 保存teacher_id={teacher_id}子批次失败: {_e}")
+
+                        teacher_action = self.teacher_actors[module_idx].act_inference(
+                            obs_subset.detach(),
+                            hist_encoding=hist_encoding,
+                            scandots_latent=None
                         )
                         teacher_actions[mask] = teacher_action
-                # 增加一次打印计数
+
                 if debug_teacher_obs:
                     self._teacher_obs_debug_count += 1
+
+                if (~handled_mask).any():
+                    unknown_ids = terrain_ids[~handled_mask].unique()
+                    try:
+                        missing_list = unknown_ids.detach().cpu().tolist()
+                    except Exception:
+                        missing_list = []
+                    if self.teacher_ids:
+                        fallback_teacher_id = self.teacher_ids[0]
+                        warnings.warn(f"未找到匹配的教师ID: {missing_list}，将回退到teacher_id={fallback_teacher_id}")
+                        fallback_idx = self.teacher_id_to_index[fallback_teacher_id]
+                        fallback_obs = observations[~handled_mask]
+                        fallback_actions = self.teacher_actors[fallback_idx].act_inference(
+                            fallback_obs.detach(),
+                            hist_encoding=hist_encoding,
+                            scandots_latent=None
+                        )
+                        teacher_actions[~handled_mask] = fallback_actions
+                    else:
+                        warnings.warn(f"未找到匹配的教师ID: {missing_list}，且无可用教师，保持零动作")
             else:
                 # 如果没有地形信息，使用第一个教师
                 # 完全按照play.py的调用方式
@@ -501,9 +569,12 @@ class MultiTeacherStudent(nn.Module):
                     self._teacher_obs_debug_count += 1
         
         # 简单的调试信息
-        print(f"[DEBUG] 教师0原始输出: [{teacher_actions.min().item():.4f}, {teacher_actions.max().item():.4f}]")
-        print(f"[DEBUG] 最终教师动作输出: [{teacher_actions.min().item():.4f}, {teacher_actions.max().item():.4f}]")
-        print(f"[DEBUG] 教师动作均值: {teacher_actions.mean().item():.4f}, 标准差: {teacher_actions.std().item():.4f}")
+        min_val = teacher_actions.min().item()
+        max_val = teacher_actions.max().item()
+        mean_val = teacher_actions.mean().item()
+        std_val = teacher_actions.std().item()
+        print(f"[DEBUG] 教师动作输出范围: [{min_val:.4f}, {max_val:.4f}]")
+        print(f"[DEBUG] 教师动作均值: {mean_val:.4f}, 标准差: {std_val:.4f}")
         
         return teacher_actions
 
@@ -541,13 +612,19 @@ class MultiTeacherStudent(nn.Module):
         batch_size = terrain_ids.shape[0]
         device = terrain_ids.device
         
-        # 创建one-hot编码
         weights = torch.zeros(batch_size, self.num_teachers, device=device)
-        terrain_ids = terrain_ids.long()
-        terrain_ids = torch.clamp(terrain_ids, 0, self.num_teachers - 1)
-        
-        # 设置对应地形的权重为1
-        weights.scatter_(1, terrain_ids.unsqueeze(1), 1.0)
+        if self.num_teachers == 0:
+            return weights
+
+        flat_ids = terrain_ids.long().view(-1)
+        for module_idx, teacher_id in enumerate(self.teacher_ids):
+            mask = flat_ids == teacher_id
+            if mask.any():
+                weights[mask, module_idx] = 1.0
+
+        if (~weights.any(dim=1)).any():
+            fallback_idx = self.teacher_id_to_index[self.teacher_ids[0]]
+            weights[~weights.any(dim=1), fallback_idx] = 1.0
         
         # 应用温度缩放
         if temperature != 1.0:

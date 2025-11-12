@@ -65,10 +65,17 @@ for item in combine_config.proportions:
    已知：每一格子（行，列）对应的地形id，对应于proportion中的id
    obs和地形id可在rollout过程中通过step()被采样
    问题：怎么先把obs和地形id对应起来，obs_buf.shape() = [num_envs，D]，需要知道行和列是怎么并为num_envs的，需要将Terrain.terrain_type[i, j]这个两维张量reshape成num_envs的一个一维张量，把这个信息添加到extras中
+   Terrain.terrain_type[i, j]是固定的，但每个机器人的位置是不完全确定的
+   
+
 ——>
     把extras中的地形id信息存到buffer中
 ——>
    从buffer里取出一个batch的obs和对应的地形id
+
+   修改storage和transition类，加入地形信息，minibatch返回带地形信息
 ——>
+    返回的地形信息为一个[num_env]的一维向量，不需要_extract_terrain_ids
+
    _extract_terrain_ids()填充最终蒸馏所需的terrain_ids
    最终希望：对一个batch中的每一个obs，找到相应的地形id

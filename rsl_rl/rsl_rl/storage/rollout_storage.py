@@ -46,6 +46,7 @@ class RolloutStorage:
             self.action_mean = None
             self.action_sigma = None
             self.hidden_states = None
+            self.terrain_ids = None
         def clear(self):
             self.__init__()
 
@@ -67,6 +68,7 @@ class RolloutStorage:
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
+        self.terrain_ids = torch.zeros(num_transitions_per_env, num_envs, device=self.device, dtype=torch.long)
 
         # For PPO
         self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -97,6 +99,8 @@ class RolloutStorage:
         self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
         self.mu[self.step].copy_(transition.action_mean)
         self.sigma[self.step].copy_(transition.action_sigma)
+        if transition.terrain_ids is not None:
+            self.terrain_ids[self.step].copy_(transition.terrain_ids.view(-1))
 
         self._save_hidden_states(transition.hidden_states)
         self.step += 1
@@ -148,9 +152,10 @@ class RolloutStorage:
     def mini_batch_generator(self, num_mini_batches, num_epochs=8):
         batch_size = self.num_envs * self.num_transitions_per_env
         mini_batch_size = batch_size // num_mini_batches
-        indices = torch.randperm(num_mini_batches*mini_batch_size, requires_grad=False, device=self.device)
+        indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
 
         observations = self.observations.flatten(0, 1)
+        terrain_ids = self.terrain_ids.flatten(0, 1)
 
         # # shift the observations by one step to the left to get the next observations
         # next_disc_observations = torch.cat((self.disc_observations[1:], self.disc_observations[-1].unsqueeze(0)), dim=0)
@@ -174,8 +179,8 @@ class RolloutStorage:
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
 
-                start = i*mini_batch_size
-                end = (i+1)*mini_batch_size
+                start = i * mini_batch_size
+                end = (i + 1) * mini_batch_size
                 batch_idx = indices[start:end]
 
                 obs_batch = observations[batch_idx]
@@ -187,18 +192,30 @@ class RolloutStorage:
                 advantages_batch = advantages[batch_idx]
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
+                terrain_ids_batch = terrain_ids[batch_idx]
 
-                
-                yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
+                yield (
+                    obs_batch,
+                    critic_observations_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    terrain_ids_batch,
+                    (None, None),
+                    None,
+                )
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
 
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
-        if self.privileged_observations is not None: 
+        if self.privileged_observations is not None:
             padded_critic_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
-        else: 
+        else:
             padded_critic_obs_trajectories = padded_obs_trajectories
 
         mini_batch_size = self.num_envs // num_mini_batches
@@ -226,20 +243,37 @@ class RolloutStorage:
                 advantages_batch = self.advantages[:, start:stop]
                 values_batch = self.values[:, start:stop]
                 old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
+                terrain_ids_batch = self.terrain_ids[:, start:stop]
 
                 # reshape to [num_envs, time, num layers, hidden dim] (original shape: [time, num_layers, num_envs, hidden_dim])
                 # then take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 last_was_done = last_was_done.permute(1, 0)
-                hid_a_batch = [ saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
-                                for saved_hidden_states in self.saved_hidden_states_a ] 
-                hid_c_batch = [ saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
-                                for saved_hidden_states in self.saved_hidden_states_c ]
+                hid_a_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_a
+                ]
+                hid_c_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_c
+                ]
                 # remove the tuple for GRU
-                hid_a_batch = hid_a_batch[0] if len(hid_a_batch)==1 else hid_a_batch
-                hid_c_batch = hid_c_batch[0] if len(hid_c_batch)==1 else hid_a_batch
+                hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
+                hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
 
-                yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (hid_a_batch, hid_c_batch), masks_batch
-                
+                yield (
+                    obs_batch,
+                    critic_obs_batch,
+                    actions_batch,
+                    values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    terrain_ids_batch,
+                    (hid_a_batch, hid_c_batch),
+                    masks_batch,
+                )
+
                 first_traj = last_traj

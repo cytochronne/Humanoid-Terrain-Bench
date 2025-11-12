@@ -67,30 +67,34 @@ def main():
     print(f"实际观测维度: Actor={actual_actor_obs_dim}, Critic={actual_critic_obs_dim}")
     
     # ========== 配置训练参数 ==========
-    # 教师模型路径列表 - 使用训练好的slope模型进行测试
-    teacher_model_paths = [
-        "/home/dataset/yanzhe/parkour/Sep26_15-13-11--hurdle_post/model_50000.pt",     # 教师0: slope (斜坡) - 已训练15000次迭代
-        
-    ]
-    
+    # 教师模型配置：键为环境中的teacher_id，值为对应的checkpoint路径（需手动维护）
+    teacher_ckpt_map = {
+        1: "/home/dataset/yanzhe/parkour/Sep26_15-13-11--hurdle_post/model_50000.pt",  # 例：地形ID 0 使用的教师模型
+        5: "/home/dataset/yanzhe/parkour/model_stair_resume5000.pt "
+
+
+    }
+
     # 验证教师模型路径是否存在
-    print("验证教师模型路径...")
-    valid_paths = []
-    for i, path in enumerate(teacher_model_paths):
-        if os.path.exists(path):
-            valid_paths.append(path)
-            print(f"✓ 教师{i}: {path}")
+    print("验证教师模型配置...")
+    valid_teacher_map = {}
+    for teacher_id, ckpt_path in teacher_ckpt_map.items():
+        if os.path.exists(ckpt_path):
+            valid_teacher_map[teacher_id] = ckpt_path
+            print(f"✓ 教师{teacher_id}: {ckpt_path}")
         else:
-            print(f"✗ 教师{i}: {path} (不存在)")
-    
-    if len(valid_paths) == 0:
-        print("警告: 没有找到有效的教师模型路径，将使用随机初始化的教师网络")
-        teacher_model_paths = []
-        num_teachers = 5
-    else:
-        print(f"找到 {len(valid_paths)} 个有效的教师模型")
-        teacher_model_paths = valid_paths
-        num_teachers = len(valid_paths)
+            print(f"✗ 教师{teacher_id}: {ckpt_path} (不存在)")
+
+    if len(valid_teacher_map) != len(teacher_ckpt_map):
+        missing_ids = [str(tid) for tid in teacher_ckpt_map.keys() if tid not in valid_teacher_map]
+        print(f"⚠️  以下教师ID的checkpoint未找到，将被忽略: {', '.join(missing_ids)}")
+
+    if not valid_teacher_map:
+        raise FileNotFoundError("未找到任何有效的教师模型，请检查teacher_ckpt_map配置中的路径。")
+
+    teacher_ids = list(valid_teacher_map.keys())
+    teacher_model_paths = list(valid_teacher_map.values())
+    num_teachers = len(teacher_ids)
 
     # ========== 创建多教师蒸馏训练配置 ==========
     train_cfg = {
@@ -125,6 +129,8 @@ def main():
             # 教师模型配置
             "num_teachers": num_teachers,
             "teacher_model_paths": teacher_model_paths,  # 这个信息会被task_registry用于wandb配置
+            "teacher_ids": teacher_ids,
+            "teacher_id_map": valid_teacher_map,
             # 网络结构配置 - 使用与实际教师模型匹配的结构
             "actor_hidden_dims": [512, 256, 128],  # 匹配教师模型结构
             "critic_hidden_dims": [512, 256, 128], # 匹配教师模型结构
@@ -179,6 +185,7 @@ def main():
     print(f"  - 项目名称: {args.proj_name if hasattr(args, 'proj_name') else 'legged_gym'}")
     print(f"  - 实验ID: {args.exptid if hasattr(args, 'exptid') else 'experiment'}")
     print(f"  - 教师模型数量: {num_teachers}")
+    print(f"  - 教师ID列表: {teacher_ids}")
     print(f"  - 教师模型路径: {teacher_model_paths}")
 
     # ========== 创建多教师蒸馏运行器 ==========
@@ -188,10 +195,22 @@ def main():
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     
     # 修改注册配置中的教师模型路径
-    if hasattr(train_cfg, 'policy') and hasattr(train_cfg.policy, 'teacher_model_paths'):
-        train_cfg.policy.teacher_model_paths = teacher_model_paths
-        train_cfg.policy.num_teachers = num_teachers
-        print(f"✓ 已更新注册配置中的教师模型路径: {num_teachers}个教师")
+    if hasattr(train_cfg, 'policy'):
+        if hasattr(train_cfg.policy, 'teacher_model_paths'):
+            train_cfg.policy.teacher_model_paths = teacher_model_paths
+        if hasattr(train_cfg.policy, 'num_teachers'):
+            train_cfg.policy.num_teachers = num_teachers
+        else:
+            setattr(train_cfg.policy, 'num_teachers', num_teachers)
+        if hasattr(train_cfg.policy, 'teacher_ids'):
+            train_cfg.policy.teacher_ids = teacher_ids
+        else:
+            setattr(train_cfg.policy, 'teacher_ids', teacher_ids)
+        if hasattr(train_cfg.policy, 'teacher_id_map'):
+            train_cfg.policy.teacher_id_map = valid_teacher_map
+        else:
+            setattr(train_cfg.policy, 'teacher_id_map', valid_teacher_map)
+        print(f"✓ 已更新注册配置中的教师模型映射: {num_teachers} 个有效教师")
     
     # 使用task_registry创建运行器，这样wandb会被正确初始化
     runner, _ = task_registry.make_alg_runner(

@@ -181,7 +181,7 @@ class MultiTeacherDistillation:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         
         for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, terrain_ids_batch in generator:
             
             batch_count += 1
             
@@ -203,7 +203,8 @@ class MultiTeacherDistillation:
             
             # ==================== 教师网络推理 ====================
             # 从环境信息中提取地形ID，每个教师对应一种地形
-            terrain_ids = self._extract_terrain_ids(obs_batch)
+            #terrain_ids = self._extract_terrain_ids(obs_batch)
+            terrain_ids = terrain_ids_batch
             
             # 调试信息：检查地形ID分布
             if batch_count == 1:
